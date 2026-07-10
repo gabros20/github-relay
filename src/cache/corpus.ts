@@ -103,16 +103,61 @@ function unionStrings(a: string[], b: string[]): string[] {
 }
 
 /**
+ * GitHub full_names are case-insensitive but case-preserving: `Foo/Bar` and
+ * `foo/bar` are the same repo, never two. This is the identity/dedup key
+ * used everywhere two full_names are compared; the field itself always
+ * keeps whichever literal casing fresh-wins picked (design review fix wave
+ * 2, Important 2).
+ */
+function canonicalKey(fullName: string): string {
+  return fullName.toLowerCase();
+}
+
+/**
+ * The most recent evidence timestamp on a row: the newest per-signal
+ * `fetchedAt`, falling back to the repo's own `pushedAt`. ISO-8601 strings
+ * compare correctly with `>`. A row with neither sorts as the oldest
+ * possible evidence (`''`).
+ */
+function freshnessOf(repo: CorpusRepo): string {
+  const signalTimes = Object.values(repo.signals)
+    .map((s) => s.fetchedAt)
+    .filter((t): t is string => Boolean(t));
+  const newestSignal =
+    signalTimes.length > 0 ? signalTimes.reduce((a, b) => (a > b ? a : b)) : undefined;
+  return newestSignal ?? repo.pushedAt ?? '';
+}
+
+/**
+ * True if `a` is the more current row. Recency evidence (`freshnessOf`)
+ * decides; when two rows carry identical evidence, a full_name comparison
+ * breaks the tie deterministically — never array position, so the result
+ * never depends on which order a batch happened to list two same-identity
+ * rows in (design review fix wave 2, Important 1).
+ */
+function isNewer(a: CorpusRepo, b: CorpusRepo): boolean {
+  const fa = freshnessOf(a);
+  const fb = freshnessOf(b);
+  if (fa !== fb) return fa > fb;
+  return a.full_name > b.full_name;
+}
+
+/**
  * Merge `incoming` onto `base`: fresh-wins for every mutable field, aliases
  * union, and `signals` merged key-by-key so only the signals `incoming`
  * actually carries get overwritten (design §5 per-signal provenance).
  * `renamedFrom`, when set, is the repo's previous full_name — pushed into
- * aliases with `renamed:true` set.
+ * aliases with `renamed:true` set. Alias cleanup compares case-insensitively
+ * so a pure casing difference from `incoming.full_name` doesn't linger as a
+ * bogus alias.
  */
 function mergeRepoInto(base: CorpusRepo, incoming: CorpusRepo, renamedFrom?: string): CorpusRepo {
   const aliases = new Set(unionStrings(base.aliases, incoming.aliases));
   if (renamedFrom) aliases.add(renamedFrom);
-  aliases.delete(incoming.full_name);
+  const incomingKey = canonicalKey(incoming.full_name);
+  for (const alias of aliases) {
+    if (canonicalKey(alias) === incomingKey) aliases.delete(alias);
+  }
 
   return {
     full_name: incoming.full_name,
@@ -133,27 +178,67 @@ function mergeRepoInto(base: CorpusRepo, incoming: CorpusRepo, renamedFrom?: str
   };
 }
 
+/**
+ * Collapse same-ghid rows WITHIN one fresh batch to a single row before any
+ * of them touch `existing` state. Without this, resolving a same-batch
+ * rename inline (mutating a shared ghid map mid-loop) makes the outcome
+ * depend on which of the two rows the loop happened to visit first — the
+ * canonical name must instead be decided once, by recency evidence, so both
+ * orderings of the same batch converge to the same result (design review
+ * fix wave 2, Important 1).
+ */
+function collapseFreshByGhid(fresh: CorpusRepo[]): CorpusRepo[] {
+  const byGhid = new Map<string, CorpusRepo>();
+  const ghidOrder: string[] = [];
+  const withoutGhid: CorpusRepo[] = [];
+
+  for (const repo of fresh) {
+    if (!repo.ghid) {
+      withoutGhid.push(repo);
+      continue;
+    }
+    const seen = byGhid.get(repo.ghid);
+    if (!seen) {
+      byGhid.set(repo.ghid, repo);
+      ghidOrder.push(repo.ghid);
+      continue;
+    }
+    const winner = isNewer(repo, seen) ? repo : seen;
+    const loser = winner === repo ? seen : repo;
+    const renamedFrom =
+      canonicalKey(loser.full_name) !== canonicalKey(winner.full_name)
+        ? loser.full_name
+        : undefined;
+    byGhid.set(repo.ghid, mergeRepoInto(loser, winner, renamedFrom));
+  }
+
+  return [...ghidOrder.map((ghid) => byGhid.get(ghid) as CorpusRepo), ...withoutGhid];
+}
+
 function mergeRepos(existing: CorpusRepo[], fresh: CorpusRepo[]): CorpusRepo[] {
   const byName = new Map<string, CorpusRepo>();
   const byGhid = new Map<string, CorpusRepo>();
   for (const repo of existing) {
-    byName.set(repo.full_name, repo);
+    byName.set(canonicalKey(repo.full_name), repo);
     if (repo.ghid) byGhid.set(repo.ghid, repo);
   }
 
-  for (const incoming of fresh) {
+  for (const incoming of collapseFreshByGhid(fresh)) {
+    const key = canonicalKey(incoming.full_name);
     const renamedFrom = incoming.ghid ? byGhid.get(incoming.ghid) : undefined;
-    if (renamedFrom && renamedFrom.full_name !== incoming.full_name) {
-      byName.delete(renamedFrom.full_name);
+    const renamedKey = renamedFrom ? canonicalKey(renamedFrom.full_name) : undefined;
+
+    if (renamedFrom && renamedKey !== key) {
+      byName.delete(renamedKey as string);
       const merged = mergeRepoInto(renamedFrom, incoming, renamedFrom.full_name);
-      byName.set(merged.full_name, merged);
+      byName.set(key, merged);
       byGhid.set(merged.ghid, merged);
       continue;
     }
 
-    const base = byName.get(incoming.full_name);
+    const base = byName.get(key) ?? renamedFrom;
     const merged = base ? mergeRepoInto(base, incoming) : incoming;
-    byName.set(merged.full_name, merged);
+    byName.set(key, merged);
     if (merged.ghid) byGhid.set(merged.ghid, merged);
   }
 

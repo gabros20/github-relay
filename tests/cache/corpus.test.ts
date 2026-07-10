@@ -212,6 +212,69 @@ describe('mergeCorpus — provenance per-signal overwrite granularity', () => {
   });
 });
 
+describe('mergeCorpus — same-batch rename resolution is order-independent (fix wave 2, Important 1)', () => {
+  const newer = repo({
+    full_name: 'new-owner/new-name',
+    ghid: 'R_kgDOSAME',
+    pushedAt: '2026-07-05T00:00:00.000Z',
+  });
+  const older = repo({
+    full_name: 'old-owner/old-name',
+    ghid: 'R_kgDOSAME',
+    pushedAt: '2026-01-01T00:00:00.000Z',
+  });
+
+  test('new-name-first ordering canonicalizes on the newer (current) name', () => {
+    const existing = createCorpus('intent');
+    const fresh = createCorpus('intent');
+    fresh.repos.push(newer, older);
+
+    const merged = mergeCorpus(existing, fresh);
+    expect(merged.repos).toHaveLength(1);
+    expect(merged.repos[0]?.full_name).toBe('new-owner/new-name');
+    expect(merged.repos[0]?.aliases).toEqual(['old-owner/old-name']);
+    expect(merged.repos[0]?.renamed).toBe(true);
+  });
+
+  test('old-name-first ordering converges to the SAME result', () => {
+    const existing = createCorpus('intent');
+    const fresh = createCorpus('intent');
+    fresh.repos.push(older, newer);
+
+    const merged = mergeCorpus(existing, fresh);
+    expect(merged.repos).toHaveLength(1);
+    expect(merged.repos[0]?.full_name).toBe('new-owner/new-name');
+    expect(merged.repos[0]?.aliases).toEqual(['old-owner/old-name']);
+    expect(merged.repos[0]?.renamed).toBe(true);
+  });
+});
+
+describe('mergeCorpus — full_name case-insensitive identity (fix wave 2, Important 2)', () => {
+  test('a case collision without a shared ghid still merges into one row, fresh casing wins', () => {
+    const existing = createCorpus('intent');
+    existing.repos.push(repo({ full_name: 'octocat/Hello-World', ghid: 'R_kgDOA1' }));
+    const fresh = createCorpus('intent');
+    fresh.repos.push(repo({ full_name: 'Octocat/hello-world', ghid: 'R_kgDOA2' }));
+
+    const merged = mergeCorpus(existing, fresh);
+    expect(merged.repos).toHaveLength(1);
+    expect(merged.repos[0]?.full_name).toBe('Octocat/hello-world'); // fresh wins
+    expect(merged.repos[0]?.renamed).toBeUndefined();
+  });
+
+  test('a case collision with a shared ghid merges into one row and does not fabricate a rename', () => {
+    const existing = createCorpus('intent');
+    existing.repos.push(repo({ full_name: 'Octocat/Hello-World', ghid: 'R_kgDOSAME' }));
+    const fresh = createCorpus('intent');
+    fresh.repos.push(repo({ full_name: 'octocat/hello-world', ghid: 'R_kgDOSAME' }));
+
+    const merged = mergeCorpus(existing, fresh);
+    expect(merged.repos).toHaveLength(1);
+    expect(merged.repos[0]?.full_name).toBe('octocat/hello-world'); // fresh wins
+    expect(merged.repos[0]?.renamed).toBeUndefined();
+  });
+});
+
 describe('acceptance: full round trip save → load → merge → save', () => {
   test('a session persists, a follow-up loads and merges fresh data, and saves again', () => {
     const first = createCorpus('markdown editors', ['topic:markdown']);
