@@ -14,3 +14,25 @@ export {
   type RunResult,
 } from './cli.ts';
 export { createSources, type Sources, type CreateSourcesOptions } from './sources/index.ts';
+export { createCache, type Cache } from './cache/index.ts';
+export type { CachePaths } from './cache/paths.ts';
+export type { TreeEntry } from './cache/trees.ts';
+export type { TarballRecord } from './cache/tarballs.ts';
+export type {
+  Budget,
+  RateWindow,
+  GraphqlPoints,
+  GrepAppBreaker,
+  SimplePool,
+} from './cache/budget.ts';
+export type { EtagRecord } from './cache/etags.ts';
+export {
+  CORPUS_SCHEMA,
+  createCorpus,
+  loadCorpus,
+  saveCorpus,
+  mergeCorpus,
+  type Corpus,
+  type CorpusRepo,
+  type SignalProvenance,
+} from './cache/corpus.ts';
