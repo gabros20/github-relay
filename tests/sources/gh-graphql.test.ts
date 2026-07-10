@@ -1,0 +1,242 @@
+import { describe, expect, test } from 'bun:test';
+import { createGhGraphql } from '../../src/sources/gh-graphql.ts';
+import { EngineError } from '../../src/types.ts';
+
+// A fetch fake that records every request and answers from a handler. The
+// handler sees the parsed GraphQL body so tests can branch on the query /
+// alias count. No real network is ever touched.
+interface Call {
+  url: string;
+  init: RequestInit;
+  query: string;
+  variables: unknown;
+  aliasCount: number;
+}
+
+function fakeFetch(handler: (call: Call) => Response): {
+  fetchImpl: typeof fetch;
+  calls: Call[];
+} {
+  const calls: Call[] = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { query: string; variables?: unknown };
+    const query = body.query ?? '';
+    const call: Call = {
+      url: String(url),
+      init: init ?? {},
+      query,
+      variables: body.variables,
+      aliasCount: (query.match(/repository\(/g) ?? []).length,
+    };
+    calls.push(call);
+    return handler(call);
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+function jsonResponse(
+  body: unknown,
+  init: { status?: number; headers?: Record<string, string> } = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status: init.status ?? 200,
+    headers: { 'content-type': 'application/json', ...init.headers },
+  });
+}
+
+const getToken = async () => 'test-token';
+
+describe('graphql — request shape', () => {
+  test('POSTs to api.github.com/graphql with bearer auth, UA, and {query,variables} body', async () => {
+    const { fetchImpl, calls } = fakeFetch(() =>
+      jsonResponse({ data: { viewer: { login: 'x' } } }),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    await gh.graphql('query { viewer { login } }', { a: 1 });
+
+    expect(calls).toHaveLength(1);
+    const call = calls[0];
+    expect(call?.url).toBe('https://api.github.com/graphql');
+    expect(call?.init.method).toBe('POST');
+    const headers = new Headers(call?.init.headers);
+    expect(headers.get('authorization')).toBe('Bearer test-token');
+    expect(headers.get('user-agent')).toBe('github-relay');
+    expect(call?.variables).toEqual({ a: 1 });
+  });
+
+  test('returns the data payload to the caller', async () => {
+    const { fetchImpl } = fakeFetch(() => jsonResponse({ data: { n: 42 } }));
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    expect(await gh.graphql<{ n: number }>('query{n}')).toEqual({ n: 42 });
+  });
+});
+
+describe('graphql — rateLimit embedding', () => {
+  test('lastRateLimit() surfaces the rateLimit block from the last response', async () => {
+    const rateLimit = { cost: 1, remaining: 4999, resetAt: '2026-07-10T01:00:00Z', nodeCount: 1 };
+    const { fetchImpl } = fakeFetch(() => jsonResponse({ data: { search: {}, rateLimit } }));
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    expect(gh.lastRateLimit()).toBeNull();
+    await gh.graphql('query{ search rateLimit }');
+    expect(gh.lastRateLimit()).toEqual(rateLimit);
+  });
+});
+
+describe('graphql — error mapping', () => {
+  test('401 → AUTH_FAILED', async () => {
+    const { fetchImpl } = fakeFetch(() =>
+      jsonResponse({ message: 'Bad credentials' }, { status: 401 }),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh.graphql('q').catch((e) => e)) as EngineError;
+    expect(err.code).toBe('AUTH_FAILED');
+    expect(err.status).toBe(401);
+  });
+
+  test('403 without retry-after → AUTH_FAILED (scope/permission)', async () => {
+    const { fetchImpl } = fakeFetch(() => jsonResponse({ message: 'Forbidden' }, { status: 403 }));
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh.graphql('q').catch((e) => e)) as EngineError;
+    expect(err.code).toBe('AUTH_FAILED');
+  });
+
+  test('403 with retry-after → ABUSE_DETECTED honoring the header exactly', async () => {
+    const { fetchImpl } = fakeFetch(() =>
+      jsonResponse(
+        { message: 'secondary limit' },
+        { status: 403, headers: { 'retry-after': '30' } },
+      ),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh.graphql('q').catch((e) => e)) as EngineError;
+    expect(err.code).toBe('ABUSE_DETECTED');
+    expect(err.retryAfterMs).toBe(30_000);
+  });
+
+  test('primary rate limit (200 + RATE_LIMITED error) → RATE_LIMITED with retryAfterMs from reset', async () => {
+    const now = () => Date.parse('2026-07-10T00:00:00Z');
+    const reset = Math.floor(Date.parse('2026-07-10T00:10:00Z') / 1000);
+    const { fetchImpl } = fakeFetch(() =>
+      jsonResponse(
+        { data: null, errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] },
+        { headers: { 'x-ratelimit-reset': String(reset) } },
+      ),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken, now });
+    const err = (await gh.graphql('q').catch((e) => e)) as EngineError;
+    expect(err.code).toBe('RATE_LIMITED');
+    expect(err.retryAfterMs).toBe(10 * 60 * 1000);
+  });
+
+  test('a non-rate GraphQL error with null data throws (not a silent null)', async () => {
+    const { fetchImpl } = fakeFetch(() =>
+      jsonResponse({ data: null, errors: [{ message: 'Field bogus does not exist' }] }),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh.graphql('q').catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+  });
+});
+
+describe('batchRepositories — aliasing + partial errors', () => {
+  test('builds r0/r1 aliases from owner/repo and returns per-name data in order', async () => {
+    const { fetchImpl, calls } = fakeFetch(() =>
+      jsonResponse({
+        data: { r0: { stargazerCount: 1 }, r1: { stargazerCount: 2 }, rateLimit: {} },
+      }),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const results = await gh.batchRepositories(['a/one', 'b/two'], 'stargazerCount');
+
+    expect(calls[0]?.query).toContain('r0: repository(owner: "a", name: "one")');
+    expect(calls[0]?.query).toContain('r1: repository(owner: "b", name: "two")');
+    expect(calls[0]?.query).toContain('rateLimit { cost remaining resetAt nodeCount }');
+    expect(results).toEqual([
+      { name: 'a/one', data: { stargazerCount: 1 } },
+      { name: 'b/two', data: { stargazerCount: 2 } },
+    ]);
+  });
+
+  test('a per-alias error isolates to that name; siblings still resolve', async () => {
+    const { fetchImpl } = fakeFetch(() =>
+      jsonResponse({
+        data: { r0: { stargazerCount: 9 }, r1: null },
+        errors: [{ type: 'NOT_FOUND', path: ['r1'], message: 'Could not resolve to a Repository' }],
+      }),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const results = await gh.batchRepositories(['ok/repo', 'gone/repo'], 'stargazerCount');
+    expect(results[0]).toEqual({ name: 'ok/repo', data: { stargazerCount: 9 } });
+    expect(results[1]?.data).toBeNull();
+    expect(results[1]?.error?.code).toBe('NOT_FOUND');
+  });
+});
+
+describe('batchRepositories — adaptive bisection', () => {
+  // A source that gateways (502) whenever asked for more than 2 repos at once,
+  // succeeding for batches of <=2. The adapter must halve, never blind-retry
+  // the same size.
+  function bisectingFetch(threshold: number, status = 502) {
+    return fakeFetch((call) => {
+      if (call.aliasCount > threshold) return new Response('gateway', { status });
+      const data: Record<string, unknown> = { rateLimit: {} };
+      for (let i = 0; i < call.aliasCount; i++) data[`r${i}`] = { i };
+      return jsonResponse({ data });
+    });
+  }
+
+  test('halves a too-large batch and reports the effective successful size', async () => {
+    const { fetchImpl, calls } = bisectingFetch(2);
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const sizes: number[] = [];
+    const results = await gh.batchRepositories(['a/1', 'b/2', 'c/3', 'd/4'], 'x', {
+      batchSize: 4,
+      onEffectiveSize: (s) => sizes.push(s),
+    });
+
+    expect(calls.map((c) => c.aliasCount)).toEqual([4, 2, 2]);
+    expect(sizes).toEqual([2, 2]);
+    expect(results).toHaveLength(4);
+    expect(results.every((r) => r.data !== null)).toBe(true);
+  });
+
+  test('504 and GraphQL timeout errors trigger the same bisection', async () => {
+    // 200 response carrying a timeout error, above the size threshold.
+    const { fetchImpl, calls } = fakeFetch((call) => {
+      if (call.aliasCount > 2) {
+        return jsonResponse({
+          data: null,
+          errors: [
+            { message: 'Something went wrong while executing your query. This may be a timeout.' },
+          ],
+        });
+      }
+      const data: Record<string, unknown> = { rateLimit: {} };
+      for (let i = 0; i < call.aliasCount; i++) data[`r${i}`] = { i };
+      return jsonResponse({ data });
+    });
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const results = await gh.batchRepositories(['a/1', 'b/2', 'c/3', 'd/4'], 'x', { batchSize: 4 });
+    expect(calls.map((c) => c.aliasCount)).toEqual([4, 2, 2]);
+    expect(results).toHaveLength(4);
+  });
+
+  test('floors at size 1: a single repo that still gateways becomes a per-name SOURCE_DOWN, no infinite loop', async () => {
+    const { fetchImpl, calls } = bisectingFetch(0); // every request 502s
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const results = await gh.batchRepositories(['a/1', 'b/2'], 'x', { batchSize: 2 });
+    expect(calls.map((c) => c.aliasCount)).toEqual([2, 1, 1]);
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => r.error?.code === 'SOURCE_DOWN')).toBe(true);
+  });
+
+  test('a batch-level AUTH_FAILED is not bisected — it fails the whole batch', async () => {
+    const { fetchImpl, calls } = fakeFetch(() => new Response('nope', { status: 401 }));
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh
+      .batchRepositories(['a/1', 'b/2'], 'x', { batchSize: 2 })
+      .catch((e) => e)) as EngineError;
+    expect(err.code).toBe('AUTH_FAILED');
+    expect(calls).toHaveLength(1);
+  });
+});
