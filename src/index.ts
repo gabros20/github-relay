@@ -12,5 +12,5 @@ export {
   runGuarded,
   type ParsedArgs,
   type RunResult,
-  type Sources,
 } from './cli.ts';
+export { createSources, type Sources, type CreateSourcesOptions } from './sources/index.ts';

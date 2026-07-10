@@ -7,14 +7,14 @@ import { commandNames } from './commands/registry.ts';
 import { COMMANDS } from './commands/registry.ts';
 import { shouldRunAsEntry } from './entry.ts';
 import { err, toJson } from './output.ts';
+import { type Sources, createSources } from './sources/index.ts';
 import type { Envelope } from './types.ts';
 
 // ── Sources ──────────────────────────────────────────────────────────────
-// Injectable adapter bag. Empty for now — task 2 adds gh-graphql/gh-rest/
-// ecosystems/depsdev and each command runner narrows what it needs from it.
-// Keeping this as an open index signature (rather than a fixed empty
-// interface) lets later tasks extend it without touching this file.
-export type Sources = Record<string, unknown>;
+// The injectable adapter bag is now the concrete interface from
+// src/sources/index.ts (gh-graphql/gh-rest/ecosystems/depsdev). Command
+// runners narrow what they need from it; dispatch is still stubbed here —
+// command wiring lands in tasks 4-7.
 
 // ── Flag tables ──────────────────────────────────────────────────────────
 // Value flags consume the following token (repeatable — each occurrence
@@ -247,7 +247,9 @@ export async function runMain(argv: string[], io: MainIO = defaultIO): Promise<R
     // Only touch stdin when the user explicitly asked for it (a `-` positional),
     // so normal invocations never block waiting on an open pipe.
     const stdin = argv.includes('-') ? await io.readStdin() : '';
-    const result = await run(argv, {}, stdin);
+    // Lazy: createSources constructs nothing and resolves no token until a
+    // command actually calls an adapter (dispatch is still stubbed).
+    const result = await run(argv, createSources(), stdin);
     io.writeStdout(`${result.stdout}\n`);
     return result;
   } catch (e) {
