@@ -6,6 +6,7 @@
 // never builds envelopes.
 import type { ErrorCode } from '../types.ts';
 import { EngineError } from '../types.ts';
+import { discardBody } from './http.ts';
 import type { Seams } from './seams.ts';
 import { withSeamDefaults } from './seams.ts';
 
@@ -75,8 +76,11 @@ function isTimeoutErrors(errors: GraphqlError[] | undefined): boolean {
  * layer catches to bisect). Returns for anything else — the body is inspected
  * by the caller.
  */
-function guardTransportStatus(res: Response): void {
+async function guardTransportStatus(res: Response): Promise<void> {
   const { status } = res;
+  if (status !== 401 && status !== 403 && status !== 502 && status !== 504) return;
+  // Every path below abandons the response — release the body first.
+  await discardBody(res);
   if (status === 401) throw new EngineError('AUTH_FAILED', 'GitHub rejected the token (401).', 401);
   if (status === 403) {
     const retryAfter = res.headers.get('retry-after');
@@ -90,9 +94,47 @@ function guardTransportStatus(res: Response): void {
     }
     throw new EngineError('AUTH_FAILED', 'GitHub returned 403 (token scope/permission).', 403);
   }
-  if (status === 502 || status === 504) {
-    throw new EngineError('SOURCE_DOWN', `GitHub GraphQL gateway ${status}.`, status);
+  throw new EngineError('SOURCE_DOWN', `GitHub GraphQL gateway ${status}.`, status);
+}
+
+/** Index just past the `}` that closes the block opened at `open`. */
+function skipBalancedBraces(doc: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < doc.length; i++) {
+    const ch = doc[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
   }
+  return doc.length;
+}
+
+/**
+ * Find the `{` that opens the first OPERATION selection set, skipping any
+ * leading `fragment …{…}` definitions so we never splice into a fragment body.
+ * Handles the anonymous shorthand `{…}`, `query {…}`, and `query Name($v:T){…}`.
+ * Returns -1 when there is no selection set to amend.
+ */
+function operationSelectionBrace(doc: string): number {
+  let i = 0;
+  while (i < doc.length) {
+    if (/\s|,/.test(doc[i] as string)) {
+      i++;
+      continue;
+    }
+    if (doc.startsWith('fragment', i)) {
+      const open = doc.indexOf('{', i);
+      if (open === -1) return -1;
+      i = skipBalancedBraces(doc, open);
+      continue;
+    }
+    // First non-fragment definition is the operation; its selection set is the
+    // next `{` (past an optional name + variable definitions).
+    return doc.indexOf('{', i);
+  }
+  return -1;
 }
 
 /**
@@ -100,15 +142,14 @@ function guardTransportStatus(res: Response): void {
  * block so budget tracking never depends on a caller remembering it (design
  * §2). Deterministic string injection — no GraphQL-parser dependency: if the
  * document already selects rateLimit we leave it alone; otherwise we splice the
- * selection in right after the first `{`, which is the operation's top-level
- * selection-set opener for every shape our callers build (`{…}`, `query {…}`,
- * `query Name($v: T) {…}`). Constraint: this assumes no `{` appears before that
- * opener (e.g. an input-object default value in the variable definitions) —
- * none of our queries use one.
+ * selection into the operation's top-level selection set (see
+ * operationSelectionBrace, which skips leading fragment definitions).
+ * Constraint: assumes no stray `{`/`}` inside string arguments before the
+ * operation body — none of our queries use one.
  */
 function ensureRateLimit(query: string): string {
   if (/\brateLimit\b/.test(query)) return query;
-  const brace = query.indexOf('{');
+  const brace = operationSelectionBrace(query);
   if (brace === -1) return query;
   return `${query.slice(0, brace + 1)} ${RATE_LIMIT_SELECTION} ${query.slice(brace + 1)}`;
 }
@@ -164,14 +205,20 @@ export function createGhGraphql(deps: GhGraphqlDeps): GhGraphql {
       throw new EngineError('FETCH_FAILED', e instanceof Error ? e.message : String(e));
     }
 
-    guardTransportStatus(res);
+    await guardTransportStatus(res);
     const { status } = res;
 
-    let body: unknown = null;
+    let body: unknown;
     try {
       body = await res.json();
     } catch {
-      body = null;
+      // A response that passed the transport guard but isn't JSON is a transport
+      // failure — fail loud, never fabricate an undefined/empty success.
+      throw new EngineError(
+        'FETCH_FAILED',
+        `malformed GraphQL response body (status ${status})`,
+        status,
+      );
     }
     const data = isRecord(body)
       ? (body.data as Record<string, unknown> | null | undefined)

@@ -12,6 +12,19 @@ export interface ThirdPartyRequest {
   body?: string;
 }
 
+/**
+ * Release a response body we're about to abandon (an error/retry path) so the
+ * underlying connection isn't held open under volume. Safe on already-consumed
+ * or bodiless responses — a cancel that rejects is swallowed.
+ */
+export async function discardBody(res: Response): Promise<void> {
+  try {
+    await res.body?.cancel();
+  } catch {
+    // Body already consumed, locked, or absent — nothing to release.
+  }
+}
+
 export async function thirdPartyJson(
   fetchImpl: typeof fetch,
   source: string,
@@ -30,15 +43,24 @@ export async function thirdPartyJson(
     );
   }
 
-  if (res.status === 404) throw new EngineError('NOT_FOUND', `${source}: not found`, 404);
-  if (res.status >= 500)
+  if (res.status === 404) {
+    await discardBody(res);
+    throw new EngineError('NOT_FOUND', `${source}: not found`, 404);
+  }
+  if (res.status >= 500) {
+    await discardBody(res);
     throw new EngineError('SOURCE_DOWN', `${source} is down (${res.status})`, res.status);
-  if (!res.ok)
+  }
+  if (!res.ok) {
+    await discardBody(res);
     throw new EngineError('FETCH_FAILED', `${source} failed with status ${res.status}`, res.status);
+  }
 
   try {
     return await res.json();
   } catch {
-    return null;
+    // A 2xx we can't parse is a transport failure, NOT an empty result — failing
+    // loud keeps it distinguishable from a genuine nodata downstream.
+    throw new EngineError('FETCH_FAILED', `${source} returned a malformed response body`);
   }
 }

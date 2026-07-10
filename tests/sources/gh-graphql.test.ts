@@ -265,3 +265,56 @@ describe('batchRepositories — adaptive bisection', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe('graphql — malformed 2xx body fails loud (CRITICAL 1)', () => {
+  test('a 200 with a non-JSON body throws FETCH_FAILED, never a fabricated undefined', async () => {
+    const { fetchImpl } = fakeFetch(
+      () => new Response('<html>gateway hiccup</html>', { status: 200 }),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh.graphql('query{viewer}').catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    expect(err.code).toBe('FETCH_FAILED');
+  });
+
+  test('a malformed 200 in a batch fails the batch, not silently marks every repo nodata', async () => {
+    const { fetchImpl } = fakeFetch(() => new Response('not json', { status: 200 }));
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh
+      .batchRepositories(['a/1', 'b/2'], 'x', { batchSize: 2 })
+      .catch((e) => e)) as EngineError;
+    expect(err.code).toBe('FETCH_FAILED');
+  });
+});
+
+describe('graphql — abandoned response bodies are cancelled (IMPORTANT 3)', () => {
+  test('a 401 cancels the response body before throwing (no leaked connection)', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = (async () => new Response(body, { status: 401 })) as unknown as typeof fetch;
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    await gh.graphql('query{viewer}').catch(() => {});
+    expect(cancelled).toBe(true);
+  });
+});
+
+describe('ensureRateLimit — targets the operation, not a leading fragment (IMPORTANT 5)', () => {
+  test('a fragment-leading document splices rateLimit into the query op, not the fragment', async () => {
+    let sent = '';
+    const { fetchImpl } = fakeFetch((call) => {
+      sent = call.query;
+      return jsonResponse({ data: { repo: {}, rateLimit: {} } });
+    });
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    await gh.graphql('fragment F on Repository { stargazerCount }\nquery { repo { ...F } }');
+
+    // The fragment body must be untouched; rateLimit lands in the operation.
+    const fragmentPart = sent.slice(0, sent.indexOf('query'));
+    expect(fragmentPart).not.toContain('rateLimit');
+    expect(sent).toContain('query { rateLimit { cost remaining resetAt nodeCount }');
+  });
+});

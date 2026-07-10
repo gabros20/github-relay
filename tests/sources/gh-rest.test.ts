@@ -237,3 +237,120 @@ describe('downloadTarball — size guard', () => {
     expect(await Bun.file(OUT).bytes()).toEqual(payload);
   });
 });
+
+describe('get — malformed 2xx body fails loud (CRITICAL 1)', () => {
+  test('a 200 with a non-JSON body throws FETCH_FAILED, never a silent null', async () => {
+    const { fetchImpl } = routingFetch(() => new Response('<html>oops</html>', { status: 200 }));
+    const rest = createGhRest({ fetchImpl, getToken });
+    const err = (await rest.get('/repos/a/b').catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    expect(err.code).toBe('FETCH_FAILED');
+  });
+});
+
+describe('get — abandoned response bodies are cancelled (IMPORTANT 3)', () => {
+  test('a 404 cancels the response body before throwing', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = (async () => new Response(body, { status: 404 })) as unknown as typeof fetch;
+    const rest = createGhRest({ fetchImpl, getToken });
+    await rest.get('/repos/a/missing').catch(() => {});
+    expect(cancelled).toBe(true);
+  });
+});
+
+// Emit `chunks` one at a time so streaming behaviour (per-chunk sink writes,
+// mid-stream size abort) is observable.
+function streamOf(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+  let i = 0;
+  return new ReadableStream({
+    pull(ctrl) {
+      if (i < chunks.length) ctrl.enqueue(chunks[i++]);
+      else ctrl.close();
+    },
+  });
+}
+
+describe('downloadTarball — incremental streaming to disk (IMPORTANT 2)', () => {
+  function recordingSink() {
+    const writes: Uint8Array[] = [];
+    let closed = false;
+    const createSink = () => ({
+      write: (chunk: Uint8Array) => {
+        writes.push(chunk);
+      },
+      close: async () => {
+        closed = true;
+      },
+    });
+    return { createSink, writes, closed: () => closed };
+  }
+
+  test('writes each chunk to the sink as it arrives (never buffers the whole tarball)', async () => {
+    const codeload = 'https://codeload.github.com/a/b/tar';
+    const chunks = [new Uint8Array([1, 2]), new Uint8Array([3, 4]), new Uint8Array([5])];
+    const { fetchImpl } = routingFetch((u) =>
+      u.startsWith('https://api.github.com')
+        ? new Response(null, { status: 302, headers: { location: codeload } })
+        : new Response(streamOf(chunks), { status: 200 }),
+    );
+    const sink = recordingSink();
+    const rest = createGhRest({ fetchImpl, getToken, createSink: sink.createSink });
+    const result = await rest.downloadTarball('a', 'b', 'main', {
+      out: '/dev/null',
+      maxBytes: 1000,
+    });
+    expect(sink.writes).toHaveLength(3);
+    expect(sink.closed()).toBe(true);
+    expect(result.bytes).toBe(5);
+  });
+
+  test('mid-stream size-guard abort still throws (and stops writing)', async () => {
+    const codeload = 'https://codeload.github.com/a/b/tar';
+    const chunks = [
+      new Uint8Array([1, 2, 3]),
+      new Uint8Array([4, 5, 6]),
+      new Uint8Array([7, 8, 9]),
+    ];
+    const { fetchImpl } = routingFetch((u) =>
+      u.startsWith('https://api.github.com')
+        ? new Response(null, { status: 302, headers: { location: codeload } })
+        : new Response(streamOf(chunks), { status: 200 }),
+    );
+    const sink = recordingSink();
+    const rest = createGhRest({ fetchImpl, getToken, createSink: sink.createSink });
+    const err = (await rest
+      .downloadTarball('a', 'b', 'main', { out: '/dev/null', maxBytes: 4 })
+      .catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    expect(sink.writes.length).toBeLessThan(3);
+  });
+});
+
+describe('downloadTarball — second-hop host enforcement (IMPORTANT 4)', () => {
+  test('a codeload response that redirects to a disallowed host is refused', async () => {
+    const codeload = 'https://codeload.github.com/a/b/tar';
+    const { fetchImpl } = routingFetch((u) => {
+      if (u.startsWith('https://api.github.com')) {
+        return new Response(null, { status: 302, headers: { location: codeload } });
+      }
+      // codeload itself tries to bounce the byte-download to an evil host.
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://evil.example.com/a/b/tar' },
+      });
+    });
+    const rest = createGhRest({ fetchImpl, getToken });
+    const err = (await rest
+      .downloadTarball('a', 'b', 'main', { out: '/dev/null' })
+      .catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    // The disallowed host in the message proves host enforcement ran (not just a
+    // generic not-ok throw), i.e. the second hop is checked, not followed blindly.
+    expect(err.message).toContain('evil.example.com');
+  });
+});

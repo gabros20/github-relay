@@ -6,6 +6,7 @@
 // touch are api.github.com and codeload.github.com — never raw.githubusercontent,
 // never HTML, never stats/*.
 import { EngineError } from '../types.ts';
+import { discardBody } from './http.ts';
 import type { Seams } from './seams.ts';
 import { withSeamDefaults } from './seams.ts';
 
@@ -16,7 +17,7 @@ const API_VERSION = '2022-11-28';
 export interface RestResponse {
   status: number;
   headers: Headers;
-  /** Parsed JSON, raw text (for `raw`), or null on 304 / unparseable body. */
+  /** Parsed JSON, raw text (for `raw`), or null on 304. A malformed 2xx throws. */
   body: unknown;
   etag: string | null;
 }
@@ -45,10 +46,30 @@ export interface GhRest {
   ): Promise<{ path: string; bytes: number }>;
 }
 
+/** A streaming write target so a tarball never has to be buffered in memory. */
+export interface WriteSink {
+  write(chunk: Uint8Array): void | Promise<void>;
+  close(): Promise<void>;
+}
+
+export type CreateSink = (path: string) => WriteSink | Promise<WriteSink>;
+
 export type GhRestDeps = Partial<Seams> & {
   getToken: () => Promise<string>;
-  /** File-write seam (defaults to Bun.write) — injectable for tests. */
-  writeFile?: (path: string, data: Uint8Array) => Promise<void>;
+  /** Streaming file-sink seam (defaults to a Bun FileSink) — injectable for tests. */
+  createSink?: CreateSink;
+};
+
+const defaultCreateSink: CreateSink = (path) => {
+  const writer = Bun.file(path).writer();
+  return {
+    write: (chunk) => {
+      writer.write(chunk);
+    },
+    close: async () => {
+      await writer.end();
+    },
+  };
 };
 
 function buildHeaders(token: string, opts: GetOptions = {}): Record<string, string> {
@@ -102,13 +123,13 @@ function limitError(res: Response, wait: number): EngineError {
 async function readResponse(res: Response, opts: GetOptions): Promise<RestResponse> {
   const etag = res.headers.get('etag');
   if (opts.raw) return { status: 200, headers: res.headers, body: await res.text(), etag };
-  let body: unknown = null;
   try {
-    body = await res.json();
+    const body = await res.json();
+    return { status: 200, headers: res.headers, body, etag };
   } catch {
-    body = null;
+    // A 2xx we can't parse is a transport failure, not an empty result.
+    throw new EngineError('FETCH_FAILED', 'malformed GitHub response body', 200);
   }
-  return { status: 200, headers: res.headers, body, etag };
 }
 
 function assertAllowedHost(location: string): void {
@@ -123,20 +144,10 @@ function assertAllowedHost(location: string): void {
   }
 }
 
-function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return merged;
-}
-
 export function createGhRest(deps: GhRestDeps): GhRest {
   const { fetchImpl, sleep, now, maxRetries } = withSeamDefaults(deps);
   const { getToken } = deps;
-  const writeFile = deps.writeFile ?? (async (path, data) => void (await Bun.write(path, data)));
+  const createSink = deps.createSink ?? defaultCreateSink;
 
   async function fetchOrThrow(url: string, init: RequestInit): Promise<Response> {
     try {
@@ -158,11 +169,17 @@ export function createGhRest(deps: GhRestDeps): GhRest {
       if (status === 304) {
         return { status: 304, headers: res.headers, body: null, etag: res.headers.get('etag') };
       }
-      if (status === 404) throw new EngineError('NOT_FOUND', `not found: ${path}`, 404);
-      if (status === 401)
+      if (status === 404) {
+        await discardBody(res);
+        throw new EngineError('NOT_FOUND', `not found: ${path}`, 404);
+      }
+      if (status === 401) {
+        await discardBody(res);
         throw new EngineError('AUTH_FAILED', 'GitHub rejected the token (401).', 401);
+      }
 
       if (!isRetryableLimit(res)) {
+        await discardBody(res);
         if (status === 403) {
           throw new EngineError(
             'AUTH_FAILED',
@@ -174,7 +191,12 @@ export function createGhRest(deps: GhRestDeps): GhRest {
       }
 
       const wait = waitMs(res, now);
-      if (attempt >= maxRetries) throw limitError(res, wait);
+      if (attempt >= maxRetries) {
+        await discardBody(res);
+        throw limitError(res, wait);
+      }
+      // Release the limit response before sleeping so we don't hold a connection.
+      await discardBody(res);
       await sleep(wait);
     }
   }
@@ -204,20 +226,47 @@ export function createGhRest(deps: GhRestDeps): GhRest {
     out: string,
     maxBytes: number | undefined,
   ): Promise<number> {
+    const sink = await createSink(out);
     const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
     let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (maxBytes !== undefined && total > maxBytes) {
-        throw new EngineError('FETCH_FAILED', `tarball exceeds the ${maxBytes}-byte size guard`);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (maxBytes !== undefined && total > maxBytes) {
+          throw new EngineError('FETCH_FAILED', `tarball exceeds the ${maxBytes}-byte size guard`);
+        }
+        await sink.write(value);
       }
-      chunks.push(value);
+    } finally {
+      await sink.close();
     }
-    await writeFile(out, concatChunks(chunks, total));
     return total;
+  }
+
+  /**
+   * Fetch the codeload tarball with the second hop host-checked: `redirect:
+   * 'manual'` so a codeload→elsewhere bounce is vetted (not blindly followed),
+   * plus a final-URL host check for a runtime that auto-followed.
+   */
+  async function fetchTarballBytes(target: string, token: string): Promise<Response> {
+    const headers = buildHeaders(token);
+    let res = await fetchOrThrow(target, { headers, redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      await discardBody(res);
+      if (!location) {
+        throw new EngineError(
+          'FETCH_FAILED',
+          `tarball redirect without a location (${res.status})`,
+        );
+      }
+      assertAllowedHost(location);
+      res = await fetchOrThrow(location, { headers });
+    }
+    if (res.url) assertAllowedHost(res.url);
+    return res;
   }
 
   async function downloadTarball(
@@ -228,8 +277,9 @@ export function createGhRest(deps: GhRestDeps): GhRest {
   ): Promise<{ path: string; bytes: number }> {
     const target = await tarballUrl(owner, repo, ref);
     const token = await getToken();
-    const res = await fetchOrThrow(target, { headers: buildHeaders(token) });
+    const res = await fetchTarballBytes(target, token);
     if (!res.ok || !res.body) {
+      await discardBody(res);
       throw new EngineError('FETCH_FAILED', `tarball download failed (${res.status})`, res.status);
     }
     const contentLength = Number(res.headers.get('content-length'));
@@ -238,6 +288,7 @@ export function createGhRest(deps: GhRestDeps): GhRest {
       Number.isFinite(contentLength) &&
       contentLength > opts.maxBytes
     ) {
+      await discardBody(res);
       throw new EngineError('FETCH_FAILED', `tarball exceeds the ${opts.maxBytes}-byte size guard`);
     }
     const bytes = await streamToFile(res.body, opts.out, opts.maxBytes);

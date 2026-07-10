@@ -8,7 +8,7 @@ import { resolveToken } from './auth.ts';
 import { type DepsDev, createDepsDev } from './depsdev.ts';
 import { type Ecosystems, createEcosystems } from './ecosystems.ts';
 import { type GhGraphql, createGhGraphql } from './gh-graphql.ts';
-import { type GhRest, createGhRest } from './gh-rest.ts';
+import { type CreateSink, type GhRest, createGhRest } from './gh-rest.ts';
 import type { Seams } from './seams.ts';
 import { withSeamDefaults } from './seams.ts';
 
@@ -24,8 +24,8 @@ export interface CreateSourcesOptions extends Partial<Seams> {
   env?: Record<string, string | undefined>;
   /** Shell-out seam for `gh auth token`. */
   exec?: Exec;
-  /** File-write seam for gh-rest tarball downloads (defaults to Bun.write). */
-  writeFile?: (path: string, data: Uint8Array) => Promise<void>;
+  /** Streaming file-sink seam for gh-rest tarball downloads (defaults to a Bun FileSink). */
+  createSink?: CreateSink;
 }
 
 export function createSources(opts: CreateSourcesOptions = {}): Sources {
@@ -49,7 +49,7 @@ export function createSources(opts: CreateSourcesOptions = {}): Sources {
       return ghGraphql;
     },
     get ghRest(): GhRest {
-      ghRest ??= createGhRest({ ...seams, getToken, writeFile: opts.writeFile });
+      ghRest ??= createGhRest({ ...seams, getToken, createSink: opts.createSink });
       return ghRest;
     },
     get ecosystems(): Ecosystems {
