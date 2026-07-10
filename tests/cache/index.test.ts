@@ -61,6 +61,20 @@ describe('createCache — wires every store to the resolved root', () => {
     expect(cache.budget.load().restCore?.remaining).toBe(100);
   });
 
+  test('budget: updatePool accepts graphqlPoints with lastCost through the facade', () => {
+    const cache = createCache(dir);
+    cache.budget.updatePool('graphqlPoints', {
+      remaining: 4950,
+      resetAt: '2026-07-10T01:00:00.000Z',
+      lastCost: 2,
+    });
+    expect(cache.budget.load().graphqlPoints).toEqual({
+      remaining: 4950,
+      resetAt: '2026-07-10T01:00:00.000Z',
+      lastCost: 2,
+    });
+  });
+
   test('etags: set/get + body retrieval round-trip', () => {
     const cache = createCache(dir);
     const record = cache.etags.set('https://api.github.com/x', 'W/"1"', 'body-text');

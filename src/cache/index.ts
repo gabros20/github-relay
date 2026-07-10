@@ -3,7 +3,7 @@
 // subpath — mirrors sources/index.ts's createSources shape. Pure local
 // persistence: nothing under src/cache/ touches the network.
 import * as budgetStore from './budget.ts';
-import type { Budget, GrepAppBreaker, RateWindow, SimplePool } from './budget.ts';
+import type { Budget, GraphqlPoints, GrepAppBreaker, RateWindow, SimplePool } from './budget.ts';
 import type { EtagRecord } from './etags.ts';
 import * as etagsStore from './etags.ts';
 import type { CachePaths } from './paths.ts';
@@ -51,7 +51,10 @@ export interface Cache {
   budget: {
     load(): Budget;
     save(budget: Budget): void;
-    updatePool(pool: SimplePool, state: RateWindow): Budget;
+    // Matches budget.ts's own updatePool signature: 'graphqlPoints' is the
+    // only pool that carries lastCost, but the union isn't narrowed by pool
+    // name here either — same shape as the underlying store.
+    updatePool(pool: SimplePool, state: RateWindow | GraphqlPoints): Budget;
     updateGrepAppBreaker(state: GrepAppBreaker): Budget;
     updateLearnedCeiling(fragmentWeight: string, batchSize: number): Budget;
   };
