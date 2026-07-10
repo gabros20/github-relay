@@ -21,7 +21,14 @@ describe('err', () => {
   });
 
   test('full call carries hint, status, and retryAfterMs', () => {
-    const e = err('enrich', 'RATE_LIMITED', 'slow down', "read retryAfterMs, don't guess", 429, 5000);
+    const e = err(
+      'enrich',
+      'RATE_LIMITED',
+      'slow down',
+      "read retryAfterMs, don't guess",
+      429,
+      5000,
+    );
     expect(e).toEqual({
       ok: false,
       command: 'enrich',

@@ -19,10 +19,7 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "files": [
-    "dist",
-    ".claude/skills/github-relay/SKILL.md"
-  ],
+  "files": ["dist", ".claude/skills/github-relay/SKILL.md"],
   "scripts": {
     "generate": "bun run scripts/generate-skill.ts",
     "dev": "bun run generate && bun run src/cli.ts",
@@ -65,8 +62,5 @@
   "bugs": {
     "url": "https://github.com/gabros20/github-relay/issues"
   },
-  "trustedDependencies": [
-    "@biomejs/biome",
-    "esbuild"
-  ]
+  "trustedDependencies": ["@biomejs/biome", "esbuild"]
 }
