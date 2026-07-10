@@ -5,6 +5,7 @@
 // this store with gh-rest's downloadTarball.
 import { existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { assertHexKey } from './keys.ts';
 import { load, save } from './store.ts';
 
 export interface TarballRecord {
@@ -30,12 +31,16 @@ export function getTarball(dir: string, commitSha: string): TarballRecord | unde
   return loadRegistry(dir)[commitSha];
 }
 
+// Validated at the write entry point: commitSha becomes a plain object key
+// (`registry[commitSha] = …`), which is a prototype-pollution vector
+// (`__proto__`) if left unvalidated (design review fix wave 2).
 export function putTarball(
   dir: string,
   commitSha: string,
   filePath: string,
   now: () => number = Date.now,
 ): void {
+  assertHexKey(commitSha, 'commit sha');
   const registry = loadRegistry(dir);
   registry[commitSha] = { path: filePath, cachedAt: new Date(now()).toISOString() };
   save(registryPath(dir), registry);

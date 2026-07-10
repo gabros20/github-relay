@@ -35,24 +35,27 @@ describe('createCache — root resolution', () => {
 
 describe('createCache — wires every store to the resolved root', () => {
   test('blobs: put/get/has round-trip under the resolved root', () => {
+    const sha = 'a'.repeat(40);
     const cache = createCache(dir);
-    expect(cache.blobs.has('sha1')).toBe(false);
-    cache.blobs.put('sha1', 'content');
-    expect(cache.blobs.has('sha1')).toBe(true);
-    expect(cache.blobs.get('sha1')).toBe('content');
+    expect(cache.blobs.has(sha)).toBe(false);
+    cache.blobs.put(sha, 'content');
+    expect(cache.blobs.has(sha)).toBe(true);
+    expect(cache.blobs.get(sha)).toBe('content');
   });
 
   test('trees: put/get round-trip', () => {
+    const commitSha = 'b'.repeat(40);
     const cache = createCache(dir);
-    cache.trees.put('commit1', [{ path: 'a.ts', sha: 's1', size: 10 }]);
-    expect(cache.trees.get('commit1')).toEqual([{ path: 'a.ts', sha: 's1', size: 10 }]);
+    cache.trees.put(commitSha, [{ path: 'a.ts', sha: 'c'.repeat(40), size: 10 }]);
+    expect(cache.trees.get(commitSha)).toEqual([{ path: 'a.ts', sha: 'c'.repeat(40), size: 10 }]);
   });
 
   test('tarballs: put/get/has round-trip', () => {
+    const commitSha = 'd'.repeat(40);
     const cache = createCache(dir);
-    cache.tarballs.put('commit1', '/tmp/somefile.tar.gz', () => 1000);
-    expect(cache.tarballs.has('commit1')).toBe(true);
-    expect(cache.tarballs.get('commit1')?.path).toBe('/tmp/somefile.tar.gz');
+    cache.tarballs.put(commitSha, '/tmp/somefile.tar.gz', () => 1000);
+    expect(cache.tarballs.has(commitSha)).toBe(true);
+    expect(cache.tarballs.get(commitSha)?.path).toBe('/tmp/somefile.tar.gz');
   });
 
   test('budget: updatePool + load round-trip', () => {

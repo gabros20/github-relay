@@ -5,9 +5,13 @@
 // than silently overwriting cached history.
 import { join } from 'node:path';
 import { EngineError } from '../types.ts';
+import { assertHexKey } from './keys.ts';
 import { readFileIfExists, writeFileAtomic } from './store.ts';
 
+// Validated here, once, since every CRUD op below goes through this join —
+// an unvalidated sha is a path-traversal vector (design review fix wave 2).
 function blobPath(dir: string, sha: string): string {
+  assertHexKey(sha, 'blob sha');
   return join(dir, sha);
 }
 
