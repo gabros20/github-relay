@@ -222,13 +222,44 @@ async function readStdin(): Promise<string> {
   return data;
 }
 
+/** Injectable I/O seam for runMain, so the entry-level FATAL contract is testable. */
+export interface MainIO {
+  readStdin: () => Promise<string>;
+  writeStdout: (s: string) => void;
+}
+
+const defaultIO: MainIO = {
+  readStdin,
+  writeStdout: (s) => {
+    process.stdout.write(s);
+  },
+};
+
+/**
+ * The entry-level top-level-rejection boundary. Wraps the ENTIRE invocation —
+ * including reading stdin, which happens before run() is even called — so any
+ * rejection anywhere in the pipeline becomes a FATAL error envelope on stdout
+ * with exit 1, never a raw stack trace / uncaught rejection. run() itself
+ * stays pure and rejection-free; this is the outer layer main() delegates to.
+ */
+export async function runMain(argv: string[], io: MainIO = defaultIO): Promise<RunResult> {
+  try {
+    // Only touch stdin when the user explicitly asked for it (a `-` positional),
+    // so normal invocations never block waiting on an open pipe.
+    const stdin = argv.includes('-') ? await io.readStdin() : '';
+    const result = await run(argv, {}, stdin);
+    io.writeStdout(`${result.stdout}\n`);
+    return result;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const stdout = toJson(err('cli', 'FATAL', message));
+    io.writeStdout(`${stdout}\n`);
+    return { stdout, exitCode: 1 };
+  }
+}
+
 export async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  // Only touch stdin when the user explicitly asked for it (a `-` positional),
-  // so normal invocations never block waiting on an open pipe.
-  const stdin = argv.includes('-') ? await readStdin() : '';
-  const { stdout, exitCode } = await run(argv, {}, stdin);
-  process.stdout.write(`${stdout}\n`);
+  const { exitCode } = await runMain(process.argv.slice(2));
   process.exitCode = exitCode;
 }
 
