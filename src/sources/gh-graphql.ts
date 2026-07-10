@@ -95,6 +95,24 @@ function guardTransportStatus(res: Response): void {
   }
 }
 
+/**
+ * Adapter-level invariant: EVERY GraphQL request carries the free rateLimit
+ * block so budget tracking never depends on a caller remembering it (design
+ * §2). Deterministic string injection — no GraphQL-parser dependency: if the
+ * document already selects rateLimit we leave it alone; otherwise we splice the
+ * selection in right after the first `{`, which is the operation's top-level
+ * selection-set opener for every shape our callers build (`{…}`, `query {…}`,
+ * `query Name($v: T) {…}`). Constraint: this assumes no `{` appears before that
+ * opener (e.g. an input-object default value in the variable definitions) —
+ * none of our queries use one.
+ */
+function ensureRateLimit(query: string): string {
+  if (/\brateLimit\b/.test(query)) return query;
+  const brace = query.indexOf('{');
+  if (brace === -1) return query;
+  return `${query.slice(0, brace + 1)} ${RATE_LIMIT_SELECTION} ${query.slice(brace + 1)}`;
+}
+
 function parseRateLimit(rl: Record<string, unknown>): RateLimitInfo {
   return {
     cost: Number(rl.cost ?? 0),
@@ -140,7 +158,7 @@ export function createGhGraphql(deps: GhGraphqlDeps): GhGraphql {
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
-        body: JSON.stringify({ query, variables }),
+        body: JSON.stringify({ query: ensureRateLimit(query), variables }),
       });
     } catch (e) {
       throw new EngineError('FETCH_FAILED', e instanceof Error ? e.message : String(e));

@@ -80,6 +80,31 @@ describe('graphql — rateLimit embedding', () => {
     await gh.graphql('query{ search rateLimit }');
     expect(gh.lastRateLimit()).toEqual(rateLimit);
   });
+
+  test('a query WITHOUT a rateLimit selection still ships one (adapter-level invariant)', async () => {
+    const rateLimit = { cost: 1, remaining: 4998, resetAt: '2026-07-10T02:00:00Z', nodeCount: 1 };
+    let sentQuery = '';
+    const { fetchImpl } = fakeFetch((call) => {
+      sentQuery = call.query;
+      return jsonResponse({ data: { viewer: { login: 'x' }, rateLimit } });
+    });
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    await gh.graphql('query { viewer { login } }');
+    expect(sentQuery).toContain('rateLimit { cost remaining resetAt nodeCount }');
+    // The invariant is what lets budget tracking work even for a forgetful caller.
+    expect(gh.lastRateLimit()).toEqual(rateLimit);
+  });
+
+  test('a query that ALREADY selects rateLimit is not double-embedded', async () => {
+    let sentQuery = '';
+    const { fetchImpl } = fakeFetch((call) => {
+      sentQuery = call.query;
+      return jsonResponse({ data: { viewer: {}, rateLimit: {} } });
+    });
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    await gh.graphql('query { viewer { login } rateLimit { cost remaining resetAt nodeCount } }');
+    expect((sentQuery.match(/rateLimit/g) ?? []).length).toBe(1);
+  });
 });
 
 describe('graphql — error mapping', () => {
