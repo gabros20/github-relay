@@ -33,6 +33,8 @@ import {
 const RESULT_CAP = 1000;
 const MAX_SHARD_DEPTH = 5;
 const PROBE_DELAY_MS = 500;
+/** Total probe-point ceiling for one `--probe` run (fix wave 1, IMP 1) — auto-sharding can otherwise multiply "1 pt per slice" into hundreds of probes with zero warning; --max-probes overrides it. */
+const DEFAULT_MAX_PROBES = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** GitHub's own founding date (2008-04-10), rounded down to the year — the floor for an unbounded created: window. */
 const REPO_EPOCH = Date.UTC(2008, 0, 1);
@@ -55,15 +57,27 @@ export interface PlanOpts {
   dry?: boolean;
   probe?: boolean;
   shard?: string;
+  /** Total probe-point ceiling for this call (raw flag value; default DEFAULT_MAX_PROBES). */
+  maxProbes?: string;
   out?: string;
   quiet?: boolean;
 }
 
+/** `{code, message, retryAfterMs?}` — the same shape batch's perQuery ledger uses, reused here for both a shard's own `error` and a slice's `failures[]` entries. */
+export interface PlanErrorRecord {
+  code: string;
+  message: string;
+  retryAfterMs?: number;
+}
+
 export interface PlanShard {
   query: string;
-  count: number;
-  /** Present only when this shard is still over the 1,000-result cap and could not be split further (depth cap or both dimensions exhausted) — always paired with a manual-narrowing suggestion, never a silent drop. */
+  /** Absent when this shard was never probed at all — the --max-probes budget ran out before its turn (fix wave 1, IMP 1). */
+  count?: number;
+  /** Present when this shard is a leaf that isn't (yet) under the cap: over-cap-with-no-further-split (depth cap / both dimensions exhausted), a probe-point budget cutoff, or a probe failure — always paired with a manual-narrowing/retry suggestion, never a silent drop. */
   hint?: string;
+  /** Present only when THIS shard's own probe failed (fix wave 1, IMP 2) — sibling/ancestor shards that already succeeded are unaffected and carry no error. */
+  error?: PlanErrorRecord;
 }
 
 export interface PlanSliceResult {
@@ -74,6 +88,8 @@ export interface PlanSliceResult {
   /** Set when the slice was probed and needed sharding (or couldn't be split at all — a single-entry array). */
   shards?: PlanShard[];
   error?: { code: string; message: string };
+  /** Non-empty when one or more individual probes failed mid-recursion (fix wave 1, IMP 2) — the slice itself still stays `ok:true`: every completed sibling/ancestor shard stands, and each failure is ALSO embedded on its own leaf shard's `error`. `queries[]` for this slice still includes every leaf, failed ones included. */
+  failures?: (PlanErrorRecord & { query: string })[];
 }
 
 export interface PlanResult {
@@ -93,6 +109,7 @@ export function planOptsFromArgs(parsed: ParsedArgs): PlanOpts {
     dry: parsed.bools.has('dry'),
     probe: parsed.bools.has('probe'),
     shard: parsed.flags.shard?.[0],
+    maxProbes: parsed.flags['max-probes']?.[0],
     out: parsed.flags.out?.[0],
     quiet: parsed.bools.has('quiet'),
   };
@@ -302,19 +319,50 @@ interface ShardCtx {
   sleep: (ms: number) => Promise<void>;
   progress: ProgressReporter;
   shardDim: ShardDim;
+  /** Total probe-point ceiling for the whole `plan` run — checked BEFORE every probe attempt (fix wave 1, IMP 1). */
+  maxProbes: number;
   spend: { points: number };
   first: { done: boolean };
+  /** ms to sleep before the NEXT probe — PROBE_DELAY_MS by default, replaced by a RATE_LIMITED probe's own retryAfterMs (fix wave 1, IMP 2, mirroring batch.ts). */
+  nextDelay: { ms: number };
 }
 
-/** One serialized probe: sleeps PROBE_DELAY_MS before every probe EXCEPT the very first of the whole `plan` run (never a trailing sleep after the last one, matching batch's convention), then spends 1 point and updates the budget pool immediately. */
+function toErrorRecord(e: unknown): PlanErrorRecord {
+  if (e instanceof EngineError) {
+    return {
+      code: e.code,
+      message: e.message,
+      ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}),
+    };
+  }
+  return { code: 'FETCH_FAILED', message: e instanceof Error ? e.message : String(e) };
+}
+
+/**
+ * One serialized probe: sleeps `ctx.nextDelay.ms` before every probe EXCEPT
+ * the very first of the whole `plan` run (never a trailing sleep after the
+ * last one, matching batch's convention). On success, spends 1 point, updates
+ * the budget pool, and resets the next delay to the default. On failure,
+ * sets the next delay from a RATE_LIMITED error's own `retryAfterMs` (falling
+ * back to the default otherwise) and rethrows — the caller (shardRecursive)
+ * decides how to represent the failure; this function only owns pacing.
+ */
 async function probeOne(ctx: ShardCtx, query: string): Promise<number> {
-  if (ctx.first.done) await ctx.sleep(PROBE_DELAY_MS);
+  if (ctx.first.done) await ctx.sleep(ctx.nextDelay.ms);
   else ctx.first.done = true;
   ctx.progress(`plan probe: ${query}`);
-  const count = await probeRepositoryCount(ctx.ghGraphql, query);
-  updateBudgetFromGraphql(ctx.cache, ctx.ghGraphql);
-  ctx.spend.points += 1;
-  return count;
+  try {
+    const count = await probeRepositoryCount(ctx.ghGraphql, query);
+    updateBudgetFromGraphql(ctx.cache, ctx.ghGraphql);
+    ctx.spend.points += 1;
+    ctx.nextDelay.ms = PROBE_DELAY_MS;
+    return count;
+  } catch (e) {
+    const rec = toErrorRecord(e);
+    ctx.nextDelay.ms =
+      rec.code === 'RATE_LIMITED' ? (rec.retryAfterMs ?? PROBE_DELAY_MS) : PROBE_DELAY_MS;
+    throw e;
+  }
 }
 
 function depthCapHint(query: string): string {
@@ -328,33 +376,68 @@ function exhaustedHint(query: string): string {
   return `cannot be sharded further — both stars: and created: ranges are exhausted for '${query}'; narrow it manually or supply a different qualifier (INVALID_INPUT: no further automatic split is possible)`;
 }
 
+function budgetExhaustedHint(maxProbes: number): string {
+  return `probe budget exhausted at ${maxProbes} points; re-run with --max-probes or narrow slices`;
+}
+
+function probeFailedHint(query: string, rec: PlanErrorRecord): string {
+  return `probe failed for '${query}' (${rec.code}: ${rec.message}); re-run to retry this shard`;
+}
+
+interface ShardOutcome {
+  shards: PlanShard[];
+  failures: (PlanErrorRecord & { query: string })[];
+}
+
+function mergeOutcomes(a: ShardOutcome, b: ShardOutcome): ShardOutcome {
+  return { shards: [...a.shards, ...b.shards], failures: [...a.failures, ...b.failures] };
+}
+
+function leaf(shard: PlanShard): ShardOutcome {
+  return { shards: [shard], failures: [] };
+}
+
 /**
  * Probe `query`; if it's over the cap, split it on the current best dimension
  * and recurse into BOTH halves (never a one-shot split — design §1 row 8),
  * re-probing each one exactly like the original. Terminates because every
- * split strictly narrows its window and the depth cap (5) bounds the worst
- * case regardless. Returns a flat list of leaves: each either under the cap,
- * or over-cap-with-a-hint when no further split is possible.
+ * split strictly narrows its window, the depth cap (5) bounds the worst case
+ * regardless, and the total probe-point budget (maxProbes) bounds it again
+ * independent of tree shape. Returns a flat list of leaves — each under the
+ * cap, over-cap-with-a-hint (no further split possible), budget-cut-off
+ * (never probed), or a failed-probe leaf (fix wave 1, IMP 2) — plus a flat
+ * failures[] ledger of just the probe failures. A failing probe ISOLATES to
+ * its own leaf: every sibling/ancestor branch that already completed (the
+ * paid-for top-level count included) stands untouched in the result.
  */
-async function shardRecursive(ctx: ShardCtx, query: string, depth: number): Promise<PlanShard[]> {
-  const count = await probeOne(ctx, query);
-  if (count <= RESULT_CAP) return [{ query, count }];
-  if (depth >= MAX_SHARD_DEPTH) return [{ query, count, hint: depthCapHint(query) }];
+async function shardRecursive(ctx: ShardCtx, query: string, depth: number): Promise<ShardOutcome> {
+  if (ctx.spend.points >= ctx.maxProbes) {
+    return leaf({ query, hint: budgetExhaustedHint(ctx.maxProbes) });
+  }
+
+  let count: number;
+  try {
+    count = await probeOne(ctx, query);
+  } catch (e) {
+    const rec = toErrorRecord(e);
+    return {
+      shards: [{ query, hint: probeFailedHint(query, rec), error: rec }],
+      failures: [{ query, ...rec }],
+    };
+  }
+
+  if (count <= RESULT_CAP) return leaf({ query, count });
+  if (depth >= MAX_SHARD_DEPTH) return leaf({ query, count, hint: depthCapHint(query) });
 
   const dim = chooseDimension(query, ctx.shardDim, ctx.now());
-  if (dim === undefined) return [{ query, count, hint: exhaustedHint(query) }];
+  if (dim === undefined) return leaf({ query, count, hint: exhaustedHint(query) });
 
   const [leftW, rightW] = splitWindow(dim, getWindow(query, dim, ctx.now()));
   const leftQuery = applyWindow(query, dim, leftW);
   const rightQuery = applyWindow(query, dim, rightW);
   const left = await shardRecursive(ctx, leftQuery, depth + 1);
   const right = await shardRecursive(ctx, rightQuery, depth + 1);
-  return [...left, ...right];
-}
-
-function toErrorRecord(e: unknown): { code: string; message: string } {
-  if (e instanceof EngineError) return { code: e.code, message: e.message };
-  return { code: 'FETCH_FAILED', message: e instanceof Error ? e.message : String(e) };
+  return mergeOutcomes(left, right);
 }
 
 async function planOneSlice(
@@ -367,15 +450,18 @@ async function planOneSlice(
   if (!doProbe) return { slice, ok: true };
 
   try {
-    const shards = await shardRecursive(ctx, slice, 0);
+    const { shards, failures } = await shardRecursive(ctx, slice, 0);
     const only = shards.length === 1 ? shards[0] : undefined;
-    if (only && only.query === slice && only.hint === undefined) {
-      return { slice, ok: true, count: only.count };
-    }
-    return { slice, ok: true, shards };
+    const result: PlanSliceResult =
+      only && only.query === slice && only.hint === undefined
+        ? { slice, ok: true, count: only.count }
+        : { slice, ok: true, shards };
+    if (failures.length > 0) result.failures = failures;
+    return result;
   } catch (e) {
-    // Continue-on-error, same as batch/hydrate: one slice's transport failure
-    // (RATE_LIMITED, AUTH_FAILED, ...) never aborts the rest of the plan run.
+    // Defensive backstop only — every realistic probe failure is already
+    // isolated per-shard inside shardRecursive (fix wave 1, IMP 2); this
+    // catches a genuinely unexpected bug instead of aborting the whole run.
     return { slice, ok: false, error: toErrorRecord(e) };
   }
 }
@@ -416,6 +502,14 @@ export async function runPlan(
   }
   const shardDim: ShardDim = opts.shard === 'created' ? 'created' : 'stars';
 
+  const maxProbes = opts.maxProbes !== undefined ? Number(opts.maxProbes) : DEFAULT_MAX_PROBES;
+  if (!Number.isInteger(maxProbes) || maxProbes < 1) {
+    throw new EngineError(
+      'INVALID_INPUT',
+      `--max-probes must be a positive integer (got '${opts.maxProbes}')`,
+    );
+  }
+
   const slices = slicesFromArgs(opts.slices, stdin);
   if (slices.length === 0) {
     throw new EngineError(
@@ -436,8 +530,10 @@ export async function runPlan(
     sleep: deps.sleep ?? defaultSleep,
     progress: deps.progress ?? progressReporter(opts.quiet ?? false),
     shardDim,
+    maxProbes,
     spend: { points: 0 },
     first: { done: false },
+    nextDelay: { ms: PROBE_DELAY_MS },
   };
 
   const results: PlanSliceResult[] = [];

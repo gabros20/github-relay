@@ -38,6 +38,7 @@ import type { Envelope } from './types.ts';
 
 const VALUE_FLAGS = new Set([
   'shard',
+  'max-probes',
   'out',
   'source',
   'limit',
