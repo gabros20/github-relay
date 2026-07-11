@@ -46,9 +46,13 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          # @semantic-release/npm's verifyConditions runs `npm whoami` even under
+          # --dry-run, so dry-run is NOT actually token-free with the npm plugin
+          # in the chain (it fails ENEEDAUTH / "Invalid npm token" with no
+          # NPM_TOKEN, confirmed live in run 29156278881). Skip semantic-release
+          # entirely rather than pretend dry-run is a no-token-friendly mode.
           if [ -z "$NPM_TOKEN" ]; then
-            echo "NPM_TOKEN secret not set — running semantic-release in dry-run mode (no publish, no tag/release created)."
-            npx semantic-release --dry-run
-          else
-            npx semantic-release
+            echo "NPM_TOKEN secret not set — skipping release; add the secret to enable publishing."
+            exit 0
           fi
+          npx semantic-release
