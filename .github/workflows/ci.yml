@@ -58,6 +58,13 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install production runtime deps (bun-free — this is what a real npm consumer gets)
+        # dist/mcp-shim.js imports @modelcontextprotocol/sdk + zod as EXTERNAL
+        # deps (tsup doesn't bundle them) — this runner has no node_modules at
+        # all otherwise. bun.lockb isn't npm-readable, so resolve straight
+        # from package.json; --omit=dev keeps it to the two real runtime deps.
+        run: npm install --omit=dev --ignore-scripts --no-audit --no-fund
+
       - uses: actions/download-artifact@v4
         with:
           name: dist

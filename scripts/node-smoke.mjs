@@ -9,7 +9,8 @@
 //   1. cli --help                        (bin entry loads + runs under node)
 //   2. cli doctor --offline              (exec seam: node:child_process git check)
 //   3. gh-rest downloadTarball           (WriteSink seam: node:fs sink)
-//   4. mcp-shim stdio handshake          (bin entry + MCP SDK under node)
+//   4. runtime deps present              (mcp sdk + zod resolve — external, not bundled)
+//   5. mcp-shim stdio handshake          (bin entry + MCP SDK under node)
 // Deliberately plain JavaScript, zero bun-specific APIs, zero TypeScript —
 // `node scripts/node-smoke.mjs` needs nothing but Node itself, so a CI job
 // with no bun on PATH can run it directly.
@@ -151,7 +152,31 @@ async function checkTarballWriteSink() {
   }
 }
 
-// ── 4. mcp-shim stdio handshake ─────────────────────────────────────────
+// ── 4. runtime deps present ──────────────────────────────────────────────
+// dist/mcp-shim.js imports @modelcontextprotocol/sdk + zod as EXTERNAL deps
+// (tsup doesn't bundle them, by design — see tsup.config.ts) — a runner
+// with no `npm install` step has no node_modules at all, and mcp-shim.js
+// fails with ERR_MODULE_NOT_FOUND. Checked explicitly, as its own named
+// failure, so it never gets folded into the handshake check's generic
+// "unexpected stderr" bucket (which is what actually happened in CI before
+// this check existed — a missing-dep failure looked like a shim bug).
+async function checkRuntimeDepsInstalled() {
+  for (const pkg of ['@modelcontextprotocol/sdk/server/mcp.js', 'zod']) {
+    try {
+      await import(pkg);
+    } catch (e) {
+      failures.push(
+        `runtime deps: '${pkg}' failed to resolve — install production deps first ` +
+          `(e.g. \`npm install --omit=dev\`): ${e instanceof Error ? e.message : e}`,
+      );
+      return false;
+    }
+  }
+  console.log('node-smoke: runtime deps (mcp sdk, zod) resolve ok');
+  return true;
+}
+
+// ── 5. mcp-shim stdio handshake ─────────────────────────────────────────
 function rpc(id, method, params = {}) {
   return { jsonrpc: '2.0', id, method, params };
 }
@@ -200,7 +225,12 @@ async function main() {
   await checkHelp();
   await checkDoctorOffline();
   await checkTarballWriteSink();
-  await checkMcpHandshake();
+  const depsOk = await checkRuntimeDepsInstalled();
+  if (depsOk) {
+    await checkMcpHandshake();
+  } else {
+    console.error('node-smoke: skipping mcp-shim handshake — runtime deps missing (see above)');
+  }
 
   if (failures.length > 0) {
     console.error('\nnode-smoke: FAILED\n');
