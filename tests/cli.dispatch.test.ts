@@ -51,6 +51,7 @@ function fakeSources(): Sources {
     ecosystems: {} as unknown as Sources['ecosystems'],
     depsdev: {} as unknown as Sources['depsdev'],
     grepApp: {} as unknown as Sources['grepApp'],
+    clickhouse: {} as unknown as Sources['clickhouse'],
   };
 }
 
@@ -528,7 +529,7 @@ describe('dispatch — budget (task 7)', () => {
     const sources = fakeSources();
     sources.ghRest = fakeGhRestForExtraction();
     const { stdout, exitCode } = await run(
-      ['budget', '--forecast', 'health:1', '--compact'],
+      ['budget', '--forecast', 'rank:1', '--compact'],
       sources,
       '',
       createCache(dir),
@@ -581,6 +582,11 @@ describe('dispatch — doctor (task 7)', () => {
       },
       grepApp: {
         search: async () => {
+          throw new Error('down');
+        },
+      },
+      clickhouse: {
+        monthlyEvents: async () => {
           throw new Error('down');
         },
       },

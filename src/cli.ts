@@ -12,6 +12,7 @@ import { codeOptsFromArgs, runCode } from './commands/code.ts';
 import { digestOptsFromArgs, runDigest } from './commands/digest.ts';
 import { doctorOptsFromArgs, runDoctor } from './commands/doctor.ts';
 import { enrichOptsFromArgs, runEnrich } from './commands/enrich.ts';
+import { healthOptsFromArgs, runHealth } from './commands/health.ts';
 import { hydrateOptsFromArgs, runHydrate } from './commands/hydrate.ts';
 import { planOptsFromArgs, runPlan } from './commands/plan.ts';
 import { rankOptsFromArgs, runRank } from './commands/rank.ts';
@@ -192,13 +193,14 @@ function helpText(): string {
 /**
  * Dispatch a parsed command against Sources. search/batch/hydrate (task 4),
  * enrich/rank (task 5), skim/read/digest (task 6), budget/doctor/cache
- * (task 7), plan (task 9), and code (task 10) are wired to their runners,
- * each wrapped in `guard()` so an EngineError becomes a per-code envelope.
- * The one still-unwired command (health — milestone B) falls through to a
- * clear "not yet implemented" envelope. A name outside the registry gets the
- * same UNKNOWN_COMMAND code with a different message, so the CLI's exit-code
- * rule (`error.code === 'UNKNOWN_COMMAND' → exit 2`) covers both cases
- * uniformly.
+ * (task 7), plan (task 9), code (task 10), and health (task 11) are all wired
+ * to their runners, each wrapped in `guard()` so an EngineError becomes a
+ * per-code envelope. With every registered command now wired, the `default`
+ * branch is only reachable if a name is added to the registry without a
+ * dispatch case — it stays as a clear "not yet implemented" envelope. A name
+ * outside the registry gets the same UNKNOWN_COMMAND code with a different
+ * message, so the CLI's exit-code rule (`error.code === 'UNKNOWN_COMMAND' →
+ * exit 2`) covers both cases uniformly.
  */
 export function dispatch(
   parsed: ParsedArgs,
@@ -230,6 +232,8 @@ export function dispatch(
       return guard('code', () => runCode(sources, cache, codeOptsFromArgs(parsed)));
     case 'enrich':
       return guard('enrich', () => runEnrich(sources, cache, enrichOptsFromArgs(parsed)));
+    case 'health':
+      return guard('health', () => runHealth(sources, cache, healthOptsFromArgs(parsed)));
     case 'rank':
       // rank is offline: it never receives Sources — enforced by runRank's
       // signature taking only opts (design §3.7, zero network).

@@ -42,11 +42,10 @@ describe('run — unknown command', () => {
   });
 });
 
-// search/batch/hydrate (task 4), enrich/rank (task 5), skim/read/digest
-// (task 6), budget/doctor/cache (task 7), plan (task 9), and code (task 10)
-// are wired — their own envelope/exit-code contract is covered in
-// tests/cli.dispatch.test.ts. Every other registered command still falls
-// through to the "not yet implemented" path here.
+// As of task 11 EVERY registered command is wired to a runner — their
+// envelope/exit-code contracts are covered in tests/cli.dispatch.test.ts and
+// each command's own suite. There is no longer a "not yet implemented"
+// dispatch path for any registry name.
 const WIRED_COMMANDS = new Set([
   'plan',
   'search',
@@ -55,6 +54,7 @@ const WIRED_COMMANDS = new Set([
   'code',
   'enrich',
   'rank',
+  'health',
   'skim',
   'read',
   'digest',
@@ -64,23 +64,19 @@ const WIRED_COMMANDS = new Set([
 ]);
 const UNIMPLEMENTED_COMMANDS = commandNames.filter((name) => !WIRED_COMMANDS.has(name));
 
-describe('run — registered but unimplemented command', () => {
-  test('a still-unimplemented runner (health) → UNKNOWN_COMMAND envelope, exit 2, command echoed', async () => {
-    const { stdout, exitCode } = await run(['health'], emptySources);
-    expect(exitCode).toBe(2);
+describe('run — every registered command is now wired (task 11)', () => {
+  test('no registry name falls through to a "not yet implemented" envelope', () => {
+    expect(UNIMPLEMENTED_COMMANDS).toEqual([]);
+  });
+
+  test('health without --in → INVALID_INPUT, exit 1 (not the unimplemented path)', async () => {
+    const { stdout, exitCode } = await run(['health', 'o/r'], emptySources);
+    expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
     if (envelope.ok) throw new Error('expected failure');
-    expect(envelope.error.code).toBe('UNKNOWN_COMMAND');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
     expect(envelope.command).toBe('health');
-    expect(envelope.error.message).toContain('not yet implemented');
-  });
-
-  test('every still-unimplemented registered command dispatches to the not-yet-implemented path', async () => {
-    for (const name of UNIMPLEMENTED_COMMANDS) {
-      const { exitCode } = await run([name], emptySources);
-      expect(exitCode).toBe(2);
-    }
   });
 });
 
