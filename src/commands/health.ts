@@ -30,7 +30,12 @@ import type { ClickhouseEventRow, ClickhousePlay } from '../sources/clickhouse-p
 import type { GhGraphql, RepoResult } from '../sources/gh-graphql.ts';
 import type { GhRest } from '../sources/gh-rest.ts';
 import { EngineError } from '../types.ts';
-import { updateBudgetFromGraphql, updateBudgetFromRestHeaders } from './_shared.ts';
+import {
+  learnedCeilingRecorder,
+  startingBatchSize,
+  updateBudgetFromGraphql,
+  updateBudgetFromRestHeaders,
+} from './_shared.ts';
 
 const HEAVY_BATCH = 10; // design §3: ≤10 ids per heavy fragment
 const ISSUE_WINDOW_DAYS = 90;
@@ -486,13 +491,15 @@ async function runHeavyStage(
   const byName = new Map<string, HeavyNode>();
   const failed: HealthFailure[] = [];
   let pointsSpent = 0;
+  const batchSize = startingBatchSize(cache, 'heavy', HEAVY_BATCH);
+  const onEffectiveSize = learnedCeilingRecorder(cache, 'heavy', batchSize);
   for (let i = 0; i < names.length; i += HEAVY_BATCH) {
     const chunk = names.slice(i, i + HEAVY_BATCH);
     progress(`health heavy ${i + 1}-${Math.min(i + HEAVY_BATCH, names.length)}/${names.length}`);
     const results: RepoResult<HeavyNode>[] = await sources.ghGraphql.batchRepositories<HeavyNode>(
       chunk,
       fragment,
-      { batchSize: HEAVY_BATCH },
+      { batchSize, onEffectiveSize },
     );
     updateBudgetFromGraphql(cache, sources.ghGraphql);
     const rl = sources.ghGraphql.lastRateLimit();

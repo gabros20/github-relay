@@ -60,16 +60,25 @@ interface FakeConfig {
   ecosystems?: (fullName: string) => unknown; // may throw
   packageVersions?: (owner: string, repo: string) => unknown; // may throw
   dependents?: (pkg: { system: string; name: string }, version: string) => unknown; // may throw
+  /** task 12: simulate a bisected effective size, via onEffectiveSize, lower than the requested batch. */
+  effectiveSize?: number;
 }
 
 function fakeSources(cfg: FakeConfig) {
   const calls: string[] = [];
+  const batchSizes: (number | undefined)[] = [];
   const rate = { cost: 2, remaining: 4990, resetAt: '2026-07-11T02:00:00Z', nodeCount: 25 };
   const sources: EnrichSources = {
     ghGraphql: {
       lastRateLimit: () => rate,
-      batchRepositories: async <T>(names: string[]) => {
+      batchRepositories: async <T>(
+        names: string[],
+        _fragment: string,
+        opts?: { batchSize?: number; onEffectiveSize?: (size: number) => void },
+      ) => {
         calls.push(`graphql:${names.join(',')}`);
+        batchSizes.push(opts?.batchSize);
+        if (cfg.effectiveSize !== undefined) opts?.onEffectiveSize?.(cfg.effectiveSize);
         const handler =
           cfg.graphql ?? ((n: string[]) => n.map((name) => ({ name, data: enrichNode(name) })));
         return handler(names) as RepoResult<T>[];
@@ -95,7 +104,7 @@ function fakeSources(cfg: FakeConfig) {
       },
     },
   };
-  return { sources, calls };
+  return { sources, calls, batchSizes };
 }
 
 let dir: string;
@@ -418,6 +427,25 @@ describe('enrich — per-repo GraphQL failure isolation', () => {
     const result = await runEnrich(sources, cache, { in: path, ids: [] }, { now: NOW });
     expect(result.enriched).toBe(1);
     expect(result.failed).toEqual([{ id: 'acme/gone', code: 'NOT_FOUND', message: 'gone' }]);
+  });
+});
+
+describe('enrich — learned GraphQL batch ceilings (task 12)', () => {
+  test('a bisected effective size below the requested batch persists a tighter light ceiling', async () => {
+    const path = writeCorpus([bareRepo('acme/a'), bareRepo('acme/b')]);
+    const { sources } = fakeSources({ effectiveSize: 12 }); // below enrich's static default of 25
+    const cache = createCache(dir);
+    await runEnrich(sources, cache, { in: path, ids: [] }, { now: NOW });
+    expect(cache.budget.load().learnedCeilings.light).toBe(12);
+  });
+
+  test('a subsequent enrich starts from the learned ceiling instead of the static 25 default', async () => {
+    const path = writeCorpus([bareRepo('acme/a')]);
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('light', 12);
+    const { sources, batchSizes } = fakeSources({});
+    await runEnrich(sources, cache, { in: path, ids: [] }, { now: NOW });
+    expect(batchSizes).toEqual([12]);
   });
 });
 

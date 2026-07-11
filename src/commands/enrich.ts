@@ -26,7 +26,13 @@ import type { DepsDev, PackageKey } from '../sources/depsdev.ts';
 import type { Ecosystems } from '../sources/ecosystems.ts';
 import type { GhGraphql, RepoResult } from '../sources/gh-graphql.ts';
 import { EngineError } from '../types.ts';
-import { type RawRepoNode, normalizeRepoNode, updateBudgetFromGraphql } from './_shared.ts';
+import {
+  type RawRepoNode,
+  learnedCeilingRecorder,
+  normalizeRepoNode,
+  startingBatchSize,
+  updateBudgetFromGraphql,
+} from './_shared.ts';
 
 const GRAPHQL_BATCH = 25;
 const COMMIT_WINDOW_DAYS = 90;
@@ -377,7 +383,7 @@ interface GraphqlStage {
   pointsSpent: number;
 }
 
-/** Fetch the light fragment for `targets` in serialized 25-batches, summing observed GraphQL cost. */
+/** Fetch the light fragment for `targets` in serialized 25-batches (or the learned 'light' ceiling, if lower), summing observed GraphQL cost. */
 async function runGraphqlStage(
   sources: EnrichSources,
   cache: Cache,
@@ -391,13 +397,17 @@ async function runGraphqlStage(
   const failed: EnrichFailure[] = [];
   let pointsSpent = 0;
 
+  const batchSize = startingBatchSize(cache, 'light', GRAPHQL_BATCH);
+  const onEffectiveSize = learnedCeilingRecorder(cache, 'light', batchSize);
+
   for (let i = 0; i < targets.length; i += GRAPHQL_BATCH) {
     const chunk = targets.slice(i, i + GRAPHQL_BATCH).map((r) => r.full_name);
     progress(
       `enrich graphql ${i + 1}-${Math.min(i + GRAPHQL_BATCH, targets.length)}/${targets.length}`,
     );
     const results = await sources.ghGraphql.batchRepositories<EnrichNode>(chunk, fragment, {
-      batchSize: GRAPHQL_BATCH,
+      batchSize,
+      onEffectiveSize,
     });
     updateBudgetFromGraphql(cache, sources.ghGraphql);
     const rl = sources.ghGraphql.lastRateLimit();

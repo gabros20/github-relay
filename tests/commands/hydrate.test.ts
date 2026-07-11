@@ -26,7 +26,11 @@ function fixtureNode(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function fakeGhGraphql(handler: (names: string[], fragment: string) => RepoResult<unknown>[]) {
+function fakeGhGraphql(
+  handler: (names: string[], fragment: string) => RepoResult<unknown>[],
+  /** task 12: simulate a bisected effective size, via onEffectiveSize, lower than the requested batch. */
+  effectiveSize?: number,
+) {
   const calls: { names: string[]; fragment: string; batchSize?: number }[] = [];
   return {
     calls,
@@ -42,9 +46,10 @@ function fakeGhGraphql(handler: (names: string[], fragment: string) => RepoResul
     batchRepositories: async <T>(
       names: string[],
       fragment: string,
-      opts?: { batchSize?: number },
+      opts?: { batchSize?: number; onEffectiveSize?: (size: number) => void },
     ) => {
       calls.push({ names, fragment, batchSize: opts?.batchSize });
+      if (effectiveSize !== undefined) opts?.onEffectiveSize?.(effectiveSize);
       return handler(names, fragment) as RepoResult<T>[];
     },
   };
@@ -147,6 +152,28 @@ describe('runHydrate — batch size + fragment', () => {
     await runHydrate({ ghGraphql }, cache, { ids: ['octocat/hello-world'] }, '');
     expect(ghGraphql.calls[0]?.batchSize).toBe(50);
     expect(ghGraphql.calls[0]?.fragment).toContain('nameWithOwner');
+  });
+});
+
+describe('runHydrate — learned GraphQL batch ceilings (task 12)', () => {
+  test('a bisected effective size below the requested batch persists a tighter light ceiling', async () => {
+    const cache = createCache(dir);
+    const ghGraphql = fakeGhGraphql(
+      (names) => names.map((name) => ({ name, data: fixtureNode({ nameWithOwner: name }) })),
+      12, // simulated bisection landed below hydrate's static default of 50
+    );
+    await runHydrate({ ghGraphql }, cache, { ids: ['octocat/hello-world'] }, '');
+    expect(cache.budget.load().learnedCeilings.light).toBe(12);
+  });
+
+  test('a subsequent hydrate starts from the learned ceiling instead of the static 50 default', async () => {
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('light', 12);
+    const ghGraphql = fakeGhGraphql((names) =>
+      names.map((name) => ({ name, data: fixtureNode({ nameWithOwner: name }) })),
+    );
+    await runHydrate({ ghGraphql }, cache, { ids: ['octocat/hello-world'] }, '');
+    expect(ghGraphql.calls[0]?.batchSize).toBe(12);
   });
 });
 

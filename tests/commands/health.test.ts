@@ -211,6 +211,8 @@ interface FakeConfig {
   clickhouseThrow?: EngineError;
   contributors?: Record<string, { login: string; contributions: number }[]>;
   contributorsThrow?: Set<string>;
+  /** task 12: simulate a bisected effective size lower than the requested batch, via onEffectiveSize. */
+  effectiveSize?: number;
 }
 
 interface FakeHandle {
@@ -239,9 +241,10 @@ function fakeSources(cfg: FakeConfig): FakeHandle {
       batchRepositories: async <T = unknown>(
         names: string[],
         _fragment: string,
-        opts?: { batchSize?: number },
+        opts?: { batchSize?: number; onEffectiveSize?: (size: number) => void },
       ) => {
         handle.heavyBatchSizes.push(opts?.batchSize ?? 25);
+        if (cfg.effectiveSize !== undefined) opts?.onEffectiveSize?.(cfg.effectiveSize);
         return names.map((name): RepoResult<T> => {
           const data = cfg.heavy?.[name];
           if (data === undefined)
@@ -403,6 +406,56 @@ describe('runHealth — end-to-end coverage completion', () => {
     expect(one?.signals.openIssues90d?.source).toBe('health');
     expect(one?.signals.closedIssues90d?.value).toBe(15);
     expect(one?.signals.openIssues).toBeUndefined(); // enrich's lifetime keys untouched
+  });
+});
+
+describe('runHealth — learned GraphQL batch ceilings (task 12)', () => {
+  test('a bisected effective size below the requested batch persists a tighter heavy ceiling', async () => {
+    const names = ['o/one'];
+    const path = writeCorpus(
+      dir,
+      names.map((n) => enrichedRepo(n)),
+    );
+    const cache = createCache(dir);
+    const handle = fakeSources({
+      probe: 'available',
+      heavy: Object.fromEntries(names.map((n) => [n, heavyNode(n)])),
+      effectiveSize: 3, // simulated bisection, below the static heavy default of 10
+    });
+    await runHealth(handle.sources, cache, { in: path, ids: names }, { now: NOW });
+    expect(cache.budget.load().learnedCeilings.heavy).toBe(3);
+  });
+
+  test('a subsequent health run starts from the learned heavy ceiling instead of the static 10 default', async () => {
+    const names = ['o/one'];
+    const path = writeCorpus(
+      dir,
+      names.map((n) => enrichedRepo(n)),
+    );
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('heavy', 3);
+    const handle = fakeSources({
+      probe: 'available',
+      heavy: Object.fromEntries(names.map((n) => [n, heavyNode(n)])),
+    });
+    await runHealth(handle.sources, cache, { in: path, ids: names }, { now: NOW });
+    expect(handle.heavyBatchSizes).toEqual([3]);
+  });
+
+  test('a learned ceiling never blows past the static 10 default (enrich\'s 25-light ceiling is a different weight class)', async () => {
+    const names = ['o/one'];
+    const path = writeCorpus(
+      dir,
+      names.map((n) => enrichedRepo(n)),
+    );
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('light', 25); // unrelated weight class, must not leak into heavy
+    const handle = fakeSources({
+      probe: 'available',
+      heavy: Object.fromEntries(names.map((n) => [n, heavyNode(n)])),
+    });
+    await runHealth(handle.sources, cache, { in: path, ids: names }, { now: NOW });
+    expect(handle.heavyBatchSizes).toEqual([10]);
   });
 });
 

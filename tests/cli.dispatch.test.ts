@@ -52,6 +52,7 @@ function fakeSources(): Sources {
     depsdev: {} as unknown as Sources['depsdev'],
     grepApp: {} as unknown as Sources['grepApp'],
     clickhouse: {} as unknown as Sources['clickhouse'],
+    ossinsight: {} as unknown as Sources['ossinsight'],
   };
 }
 
@@ -587,6 +588,11 @@ describe('dispatch — doctor (task 7)', () => {
       },
       clickhouse: {
         monthlyEvents: async () => {
+          throw new Error('down');
+        },
+      },
+      ossinsight: {
+        trending: async () => {
           throw new Error('down');
         },
       },

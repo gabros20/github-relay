@@ -14,8 +14,10 @@ import {
   PRE_ENRICH_FRAGMENT,
   type RawRepoNode,
   compactRow,
+  learnedCeilingRecorder,
   loadCorpusOrEmpty,
   normalizeRepoNode,
+  startingBatchSize,
   updateBudgetFromGraphql,
 } from './_shared.ts';
 
@@ -105,8 +107,10 @@ export async function runHydrate(
   }
   const ids = dedupe(rawIds);
 
+  const batchSize = startingBatchSize(cache, 'light', BATCH_SIZE);
   const results = await sources.ghGraphql.batchRepositories<RawRepoNode>(ids, PRE_ENRICH_FRAGMENT, {
-    batchSize: BATCH_SIZE,
+    batchSize,
+    onEffectiveSize: learnedCeilingRecorder(cache, 'light', batchSize),
   });
   updateBudgetFromGraphql(cache, sources.ghGraphql);
 
