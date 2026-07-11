@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Type check (src)
+        run: bun run typecheck
+
+      - name: Type check (tests)
+        run: bun run typecheck:tests
+
+      - name: Test
+        run: bun test
+
+      - name: Build
+        run: bun run build
+
+      - name: Smoke-test the built MCP shim over real stdio (plain node, not bun)
+        run: bun run smoke:mcp
+
+      - name: Verify package contents
+        run: npm pack --dry-run
