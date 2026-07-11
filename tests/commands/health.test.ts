@@ -442,7 +442,7 @@ describe('runHealth — learned GraphQL batch ceilings (task 12)', () => {
     expect(handle.heavyBatchSizes).toEqual([3]);
   });
 
-  test('a learned ceiling never blows past the static 10 default (enrich\'s 25-light ceiling is a different weight class)', async () => {
+  test("a learned ceiling never blows past the static 10 default (enrich's 25-light ceiling is a different weight class)", async () => {
     const names = ['o/one'];
     const path = writeCorpus(
       dir,

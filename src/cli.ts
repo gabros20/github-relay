@@ -43,6 +43,7 @@ const VALUE_FLAGS = new Set([
   'max-probes',
   'out',
   'source',
+  'period',
   'limit',
   'language',
   'topic',

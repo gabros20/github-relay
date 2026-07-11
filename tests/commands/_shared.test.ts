@@ -270,7 +270,7 @@ describe('startingBatchSize — learned GraphQL batch ceilings', () => {
     expect(startingBatchSize(cache, 'light', 25)).toBe(12);
   });
 
-  test('a learned ceiling never exceeds the CALLER\'s own static default, even if the stored value is higher', () => {
+  test("a learned ceiling never exceeds the CALLER's own static default, even if the stored value is higher", () => {
     const cache = createCache(dir);
     cache.budget.updateLearnedCeiling('light', 40); // e.g. hydrate's own default, higher than enrich's
     expect(startingBatchSize(cache, 'light', 25)).toBe(25);
