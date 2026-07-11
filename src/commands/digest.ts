@@ -17,7 +17,7 @@ import { gunzipSync } from 'node:zlib';
 import type { Cache } from '../cache/index.ts';
 import { writeFileAtomic } from '../cache/store.ts';
 import type { ParsedArgs } from '../cli.ts';
-import type { Exec } from '../sources/auth.ts';
+import { type Exec, createNodeExec } from '../sources/auth.ts';
 import type { GhRest } from '../sources/gh-rest.ts';
 import { EngineError } from '../types.ts';
 import { updateBudgetFromRestHeaders } from './_shared.ts';
@@ -268,15 +268,7 @@ async function viaTarball(
   }));
 }
 
-const defaultExec: Exec = async (cmd) => {
-  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe' });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  const exitCode = await proc.exited;
-  return { stdout: stdout + stderr, exitCode };
-};
+const defaultExec: Exec = createNodeExec({ combineStderr: true });
 
 function walkDir(root: string, dir: string): FileEntry[] {
   const out: FileEntry[] = [];

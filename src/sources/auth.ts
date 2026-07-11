@@ -3,6 +3,7 @@
 // research, so a missing token is a LOUD AUTH_FAILED (design §2 Auth), not a
 // silent downgrade. The only credential is one free zero-permission
 // fine-grained PAT (non-expiring recommended — see doctor).
+import { spawn } from 'node:child_process';
 import { EngineError } from '../types.ts';
 
 /** Runs an argv and returns its stdout + exit code. Injected in tests. */
@@ -11,16 +12,53 @@ export type Exec = (cmd: string[]) => Promise<{ stdout: string; exitCode: number
 export interface ResolveTokenDeps {
   /** Environment to read GH_TOKEN / GITHUB_TOKEN from (defaults to process.env). */
   env?: Record<string, string | undefined>;
-  /** Shell-out seam for `gh auth token` (defaults to a Bun.spawn runner). */
+  /** Shell-out seam for `gh auth token` (defaults to the node:child_process runner below). */
   exec?: Exec;
 }
 
-const defaultExec: Exec = async (cmd) => {
-  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'ignore' });
-  const stdout = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
-  return { stdout, exitCode };
-};
+export interface NodeExecOptions {
+  /** Merge stderr into the returned `stdout` (digest's clone-fallback error message needs both streams). */
+  combineStderr?: boolean;
+}
+
+/**
+ * The shared node:child_process-based default for the `Exec` seam — also used
+ * by doctor.ts and digest.ts, so the spawn/collect/exit-code plumbing lives
+ * in exactly one place. Works identically under bun (which implements
+ * node:child_process natively), so dev/test and the published node artifact
+ * share one code path. Never rejects: a missing binary (ENOENT) resolves
+ * with exitCode 1, matching every call site's existing "non-zero exit =
+ * failure" handling — the same effective outcome Bun.spawn's synchronous
+ * throw produced, since every call site already caught or exitCode-checked it.
+ */
+export function createNodeExec(opts: NodeExecOptions = {}): Exec {
+  const combineStderr = opts.combineStderr === true;
+  return (cmd) =>
+    new Promise((resolve) => {
+      const [command, ...args] = cmd;
+      if (!command) {
+        resolve({ stdout: '', exitCode: 1 });
+        return;
+      }
+      const proc = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', (d: Buffer) => {
+        stdout += d.toString();
+      });
+      proc.stderr.on('data', (d: Buffer) => {
+        stderr += d.toString();
+      });
+      proc.on('error', () => {
+        resolve({ stdout: combineStderr ? stderr : '', exitCode: 1 });
+      });
+      proc.on('close', (code) => {
+        resolve({ stdout: combineStderr ? stdout + stderr : stdout, exitCode: code ?? 1 });
+      });
+    });
+}
+
+const defaultExec: Exec = createNodeExec();
 
 const AUTH_HINT =
   'set GH_TOKEN or GITHUB_TOKEN, or run `gh auth login`. A free zero-permission ' +

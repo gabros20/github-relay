@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import type { Cache } from '../cache/index.ts';
 import { writeFileAtomic } from '../cache/store.ts';
 import type { ParsedArgs } from '../cli.ts';
-import { type Exec, resolveToken, tokenExpiryWarning } from '../sources/auth.ts';
+import { type Exec, createNodeExec, resolveToken, tokenExpiryWarning } from '../sources/auth.ts';
 import type { DepsDev } from '../sources/depsdev.ts';
 import type { Ecosystems } from '../sources/ecosystems.ts';
 import type { GhGraphql } from '../sources/gh-graphql.ts';
@@ -74,12 +74,7 @@ export function doctorOptsFromArgs(parsed: ParsedArgs): DoctorOpts {
   return { offline: parsed.bools.has('offline') };
 }
 
-const defaultExec: Exec = async (cmd) => {
-  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'ignore' });
-  const stdout = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
-  return { stdout, exitCode };
-};
+const defaultExec: Exec = createNodeExec();
 
 /** Races `promise` against `ms`; a timeout rejects (never hangs the whole run) and leaves no dangling timer once either side settles. */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {

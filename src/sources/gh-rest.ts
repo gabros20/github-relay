@@ -5,6 +5,7 @@
 // Anti-scraping contract enforced by construction: the only hosts it will ever
 // touch are api.github.com and codeload.github.com — never raw.githubusercontent,
 // never HTML, never stats/*.
+import { createWriteStream } from 'node:fs';
 import { EngineError } from '../types.ts';
 import { discardBody } from './http.ts';
 import type { Seams } from './seams.ts';
@@ -56,19 +57,21 @@ export type CreateSink = (path: string) => WriteSink | Promise<WriteSink>;
 
 export type GhRestDeps = Partial<Seams> & {
   getToken: () => Promise<string>;
-  /** Streaming file-sink seam (defaults to a Bun FileSink) — injectable for tests. */
+  /** Streaming file-sink seam (defaults to a node:fs write stream) — injectable for tests. */
   createSink?: CreateSink;
 };
 
 const defaultCreateSink: CreateSink = (path) => {
-  const writer = Bun.file(path).writer();
+  const stream = createWriteStream(path);
   return {
-    write: (chunk) => {
-      writer.write(chunk);
-    },
-    close: async () => {
-      await writer.end();
-    },
+    write: (chunk) =>
+      new Promise<void>((resolve, reject) => {
+        stream.write(chunk, (err) => (err ? reject(err) : resolve()));
+      }),
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        stream.end((err?: Error | null) => (err ? reject(err) : resolve()));
+      }),
   };
 };
 
