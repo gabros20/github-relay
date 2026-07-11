@@ -161,7 +161,13 @@ function mergeRepoInto(base: CorpusRepo, incoming: CorpusRepo, renamedFrom?: str
 
   return {
     full_name: incoming.full_name,
-    ghid: incoming.ghid ?? base.ghid,
+    // `||`, not `??`: the `code` lane (task 10) can only ever supply a
+    // repo/path/line hit, never a GraphQL node id, so its rows carry
+    // `ghid: ''` (the same "no id yet" sentinel normalizeRepoNode already
+    // uses) rather than `undefined`. `??` would let that blank string win
+    // over a real ghid a prior search/hydrate already recorded for the same
+    // repo — `||` treats '' the same as "not supplied" instead.
+    ghid: incoming.ghid || base.ghid,
     aliases: Array.from(aliases),
     renamed: renamedFrom !== undefined || base.renamed || incoming.renamed ? true : undefined,
     source: incoming.source ?? base.source,

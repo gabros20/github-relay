@@ -147,6 +147,26 @@ describe('mergeCorpus — dedupe by full_name, fresh-wins', () => {
     const fresh = createCorpus('should not win');
     expect(mergeCorpus(existing, fresh).intent).toBe('original intent');
   });
+
+  // The `code` lane (task 10) can only ever supply repo/path/line hits, never
+  // a GraphQL node id — its rows carry ghid:'' (same "no id yet" sentinel
+  // normalizeRepoNode already uses for a missing id). A blank incoming ghid
+  // must never clobber a real ghid a prior search/hydrate already recorded
+  // for the same repo (`||`, not `??`, in mergeRepoInto).
+  test("a code-lane row with ghid:'' merging onto an existing real-ghid row preserves the real ghid", () => {
+    const existing = createCorpus('intent');
+    existing.repos.push(repo({ full_name: 'octocat/hello-world', ghid: 'R_kgDOA1', stars: 100 }));
+    const fresh = createCorpus('intent');
+    fresh.repos.push(
+      repo({ full_name: 'octocat/hello-world', ghid: '', source: 'code', signals: {} }),
+    );
+
+    const merged = mergeCorpus(existing, fresh);
+    expect(merged.repos).toHaveLength(1);
+    expect(merged.repos[0]?.ghid).toBe('R_kgDOA1');
+    expect(merged.repos[0]?.source).toBe('code'); // fresh still wins every other mutable field
+    expect(merged.repos[0]?.stars).toBe(100); // preserved — fresh didn't supply it
+  });
 });
 
 describe('mergeCorpus — aliases union + rename re-keying by ghid', () => {
