@@ -6,9 +6,9 @@
 // service) with each individually raced against a timeout; the tradeoff is a
 // worst-case total time of sum(timeouts) rather than max(timeouts), so
 // DEFAULT_CHECK_TIMEOUT_MS is sized to keep that worst case under the
-// design's <15s budget even if every one of the 9 checks times out (task 10
-// added grepApp + grepAppBreaker, re-tightening the per-check budget from
-// the original 7-check/2000ms sizing).
+// design's <15s budget even if every one of the 10 checks times out (task 10
+// added grepApp + grepAppBreaker; task 11 added the clickhouse row, so the
+// per-check budget tightened again from the earlier 9-check/1500ms sizing).
 import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,6 +16,7 @@ import type { Cache } from '../cache/index.ts';
 import { writeFileAtomic } from '../cache/store.ts';
 import type { ParsedArgs } from '../cli.ts';
 import { type Exec, createNodeExec, resolveToken, tokenExpiryWarning } from '../sources/auth.ts';
+import type { ClickhousePlay } from '../sources/clickhouse-play.ts';
 import type { DepsDev } from '../sources/depsdev.ts';
 import type { Ecosystems } from '../sources/ecosystems.ts';
 import type { GhGraphql } from '../sources/gh-graphql.ts';
@@ -23,7 +24,7 @@ import type { GhRest } from '../sources/gh-rest.ts';
 import type { GrepApp } from '../sources/grep-app.ts';
 import { EngineError } from '../types.ts';
 
-const DEFAULT_CHECK_TIMEOUT_MS = 1500; // 9 checks * 1.5s worst case = 13.5s < design's 15s budget
+const DEFAULT_CHECK_TIMEOUT_MS = 1400; // 10 checks * 1.4s worst case = 14s < design's 15s budget
 
 // A small, well-known public repo used purely as a reachability/feature
 // probe target — never written to, never assumed to carry real research
@@ -55,6 +56,7 @@ export interface DoctorSources {
   ecosystems: Pick<Ecosystems, 'repo'>;
   depsdev: Pick<DepsDev, 'project'>;
   grepApp: Pick<GrepApp, 'search'>;
+  clickhouse: Pick<ClickhousePlay, 'monthlyEvents'>;
 }
 
 export interface DoctorDeps {
@@ -211,6 +213,18 @@ export async function runDoctor(
         ),
   );
 
+  // task 11: ClickHouse playground reachability — health.ts owns the adapter,
+  // so this is its doctor row. A one-repo monthly-histogram probe (a valid,
+  // injection-safe name) is enough to confirm the endpoint answers; a
+  // SOURCE_DOWN fails it, an empty result is still "reachable".
+  checks.push(
+    offline
+      ? skippedCheck('clickhouse')
+      : await runCheck('clickhouse', timeoutMs, () =>
+          reachabilityCheck(() => sources.clickhouse.monthlyEvents([PROBE_FULL_NAME])),
+        ),
+  );
+
   // task 10: this adapter's own doctor row, since code.ts owns the adapter.
   checks.push(
     offline
@@ -241,11 +255,31 @@ export async function runDoctor(
   // Feature probe (design §12 risk 1): starredAt access was reported
   // admin-restricted 2026-06-30, live 2026-07-10 — record ok/restricted here
   // so task 11's F-group scoring can degrade gracefully instead of guessing.
+  // Hardened (task 11): the restriction can arrive as a 200 with a NULL
+  // stargazers connection or null edge values — neither throws — so the probe
+  // inspects the returned data, not just "did it throw". Only a real starredAt
+  // value counts as available; the null shapes report restricted (a failing
+  // check the agent can see, same "failing check = data" contract).
   checks.push(
     offline
       ? skippedCheck('starredAt')
       : await runCheck('starredAt', timeoutMs, async () => {
-          await sources.ghGraphql.graphql(STARRED_AT_PROBE_QUERY);
+          const data = await sources.ghGraphql.graphql<{
+            repository?: {
+              stargazers?: { edges?: ({ starredAt?: string | null } | null)[] } | null;
+            } | null;
+          }>(STARRED_AT_PROBE_QUERY);
+          const conn = data?.repository?.stargazers;
+          if (conn == null) {
+            return {
+              ok: false,
+              detail: 'restricted (null stargazers connection — partial-error shape)',
+            };
+          }
+          const first = conn.edges?.[0];
+          if (typeof first?.starredAt !== 'string') {
+            return { ok: false, detail: 'restricted (null starredAt edge values)' };
+          }
           return { ok: true, detail: 'available' };
         }),
   );

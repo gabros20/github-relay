@@ -18,15 +18,23 @@ function headersWith(expiration?: string): Headers {
   return h;
 }
 
+// The starredAt probe is now data-inspecting (task 11), so the happy GraphQL
+// fake must return a real starredAt sample, not a bare {}. The other graphql
+// check ignores the return value, so one shape serves both.
+const STARRED_AT_OK = {
+  repository: { stargazers: { edges: [{ starredAt: '2020-01-01T00:00:00Z' }] } },
+};
+
 function happySources(): DoctorSources {
   return {
     ghRest: {
       get: async () => ({ status: 200, headers: headersWith(), body: {}, etag: null }),
     },
-    ghGraphql: { graphql: async <T = unknown>() => ({}) as T },
+    ghGraphql: { graphql: async <T = unknown>() => STARRED_AT_OK as T },
     ecosystems: { repo: async () => ({}) },
     depsdev: { project: async () => ({}) },
     grepApp: { search: async () => [] },
+    clickhouse: { monthlyEvents: async () => [] },
   };
 }
 
@@ -64,13 +72,14 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
       'graphql',
       'ecosystems',
       'depsdev',
+      'clickhouse',
       'grepApp',
       'cacheDir',
       'git',
       'starredAt',
       'grepAppBreaker',
     ]);
-    expect(result.summary).toBe('9/9 checks ok');
+    expect(result.summary).toBe('10/10 checks ok');
   });
 
   test('EVERY check failing still returns ok:true at the envelope level — healthy:false, never throws', async () => {
@@ -100,6 +109,11 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
           throw new EngineError('SOURCE_DOWN', 'grep.app down');
         },
       },
+      clickhouse: {
+        monthlyEvents: async () => {
+          throw new EngineError('SOURCE_DOWN', 'clickhouse down');
+        },
+      },
     };
     const deps: DoctorDeps = {
       exec: async () => ({ stdout: '', exitCode: 1 }),
@@ -123,7 +137,7 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
     const other = result.checks.filter((c) => c.name !== 'grepAppBreaker');
     expect(other.every((c) => c.ok === false)).toBe(true);
     expect(result.checks.find((c) => c.name === 'grepAppBreaker')?.ok).toBe(true);
-    expect(result.summary).toBe('1/9 checks ok');
+    expect(result.summary).toBe('1/10 checks ok');
   });
 
   test('a single failing check does not abort the rest — later checks still run and can pass', async () => {
@@ -155,7 +169,7 @@ describe('runDoctor — per-check timeout', () => {
     expect(byName.get('graphql')?.ok).toBe(false);
     expect(byName.get('graphql')?.detail).toContain('timed out');
     // Every other check still ran to completion.
-    expect(result.checks).toHaveLength(9);
+    expect(result.checks).toHaveLength(10);
   });
 });
 
@@ -190,6 +204,11 @@ describe('runDoctor — --offline', () => {
           throw new Error('must not be called offline');
         },
       },
+      clickhouse: {
+        monthlyEvents: async () => {
+          throw new Error('must not be called offline');
+        },
+      },
     };
     const result = await runDoctor(sources, cache, { offline: true }, happyDeps());
     const byName = new Map(result.checks.map((c) => [c.name, c]));
@@ -197,6 +216,7 @@ describe('runDoctor — --offline', () => {
     expect(byName.get('graphql')?.ok).toBe(true);
     expect(byName.get('ecosystems')?.skipped).toBe(true);
     expect(byName.get('depsdev')?.skipped).toBe(true);
+    expect(byName.get('clickhouse')?.skipped).toBe(true);
     expect(byName.get('grepApp')?.skipped).toBe(true);
     expect(byName.get('starredAt')?.skipped).toBe(true);
     expect(byName.get('token')?.skipped).toBeUndefined();
@@ -296,6 +316,27 @@ describe('runDoctor — third-party reachability semantics', () => {
     expect(ecosystems?.detail).toContain('unreachable');
   });
 
+  test('ClickHouse reachable (zero rows still counts) passes; SOURCE_DOWN fails only it', async () => {
+    const cache = createCache(dir);
+    const okSources = happySources();
+    expect(
+      (await runDoctor(okSources, cache, {}, happyDeps())).checks.find(
+        (c) => c.name === 'clickhouse',
+      )?.ok,
+    ).toBe(true);
+    const downSources = happySources();
+    downSources.clickhouse = {
+      monthlyEvents: async () => {
+        throw new EngineError('SOURCE_DOWN', 'ClickHouse playground unreachable');
+      },
+    };
+    const result = await runDoctor(downSources, cache, {}, happyDeps());
+    const ch = result.checks.find((c) => c.name === 'clickhouse');
+    expect(ch?.ok).toBe(false);
+    expect(ch?.detail).toContain('unreachable');
+    expect(result.checks.filter((c) => c.name !== 'clickhouse').every((c) => c.ok)).toBe(true);
+  });
+
   test('grep.app reachable (zero hits still counts) passes the check', async () => {
     const cache = createCache(dir);
     const sources = happySources();
@@ -351,6 +392,31 @@ describe('runDoctor — grepAppBreaker (local, always runs, informational)', () 
     const row = result.checks.find((c) => c.name === 'grepAppBreaker');
     expect(row?.skipped).toBeUndefined();
     expect(row?.detail).toBe('closed (1 consecutive failures)');
+  });
+});
+
+describe('runDoctor — hardened starredAt probe (task 11: the partial-error/null shape)', () => {
+  test('a 200 with a null stargazers connection reads as restricted, not available', async () => {
+    const cache = createCache(dir);
+    const sources = happySources();
+    sources.ghGraphql = {
+      graphql: async <T = unknown>() => ({ repository: { stargazers: null } }) as T,
+    };
+    const result = await runDoctor(sources, cache, {}, happyDeps());
+    const starredAt = result.checks.find((c) => c.name === 'starredAt');
+    expect(starredAt?.ok).toBe(false);
+    expect(starredAt?.detail).toContain('restricted');
+  });
+
+  test('present edges carrying null starredAt values also read as restricted', async () => {
+    const cache = createCache(dir);
+    const sources = happySources();
+    sources.ghGraphql = {
+      graphql: async <T = unknown>() =>
+        ({ repository: { stargazers: { edges: [{ starredAt: null }] } } }) as T,
+    };
+    const result = await runDoctor(sources, cache, {}, happyDeps());
+    expect(result.checks.find((c) => c.name === 'starredAt')?.ok).toBe(false);
   });
 });
 
