@@ -21,12 +21,23 @@ export interface BudgetSources {
 
 type ForecastPool = 'graphqlPoints' | 'restCore';
 
-/** Marginal cost per unit ("one run of this command"), design §4 table — as documented in the task-7 brief. `health` isn't wired until task 11, so it's deliberately absent (falls through to the "unsupported" branch). */
-const FORECAST_COST_MODEL: Record<string, { pool: ForecastPool; perUnit: number }> = {
-  search: { pool: 'graphqlPoints', perUnit: 1 }, // 1pt/page
-  enrich: { pool: 'graphqlPoints', perUnit: 2 }, // ~2pt per <=50-repo batch; third-party leg is zero GH quota
-  skim: { pool: 'restCore', perUnit: 2 }, // 2 REST core calls
-  digest: { pool: 'restCore', perUnit: 1 }, // 1 tarball request
+/**
+ * Marginal cost per unit ("one run of this command"), design §4 table — as
+ * documented in the task-7 brief. Each command maps to per-pool per-unit costs;
+ * most touch a single pool, but `health` (task 11) spends across BOTH GraphQL
+ * and REST core in one run, so the model is a per-pool map rather than a single
+ * pool. ClickHouse's one POST isn't a forecastable GitHub pool, so it's omitted
+ * from the affordability math (design §4: it's a no-SLA goodwill service, never
+ * a binding quota constraint).
+ */
+const FORECAST_COST_MODEL: Record<string, Partial<Record<ForecastPool, number>>> = {
+  search: { graphqlPoints: 1 }, // 1pt/page
+  enrich: { graphqlPoints: 2 }, // ~2pt per <=50-repo batch; third-party leg is zero GH quota
+  skim: { restCore: 2 }, // 2 REST core calls
+  digest: { restCore: 1 }, // 1 tarball request
+  // GATE-3 forensics on a ~10-id finalist batch (design §4 table): 1 probe +
+  // 1 heavy batch ≈ 2 GraphQL pts, ~10 /contributors = 10 REST core, 1 CH POST.
+  health: { graphqlPoints: 2, restCore: 10 },
 };
 
 export interface ForecastPoolProjection {
@@ -129,7 +140,11 @@ function computeForecast(raw: string, pools: Budget): ForecastResult {
   const spend: Record<ForecastPool, number> = { graphqlPoints: 0, restCore: 0 };
   for (const { command, count } of entries) {
     const model = FORECAST_COST_MODEL[command];
-    if (model) spend[model.pool] += model.perUnit * count;
+    if (!model) continue;
+    for (const pool of ['graphqlPoints', 'restCore'] as const) {
+      const perUnit = model[pool];
+      if (perUnit) spend[pool] += perUnit * count;
+    }
   }
 
   let affordable = true;

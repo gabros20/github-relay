@@ -138,12 +138,28 @@ describe('runBudget — --forecast', () => {
     expect(result.forecast?.pools.graphqlPoints).toEqual({ remaining: null, projected: null });
   });
 
-  test('an unknown command in --forecast is INVALID_INPUT (health lands task 11)', async () => {
+  test('an unknown command in --forecast is INVALID_INPUT', async () => {
     const cache = createCache(dir);
     const ghRest = fakeGhRest(rateLimitBody());
-    await expect(runBudget({ ghRest }, cache, { forecast: 'health:2' })).rejects.toMatchObject({
+    // `rank`/`cache` are free/offline — they have no forecastable pool cost.
+    await expect(runBudget({ ghRest }, cache, { forecast: 'rank:2' })).rejects.toMatchObject({
       code: 'INVALID_INPUT',
     });
+  });
+
+  test('health forecasts across BOTH pools in one run (task 11: 2 GraphQL + 10 REST core per unit)', async () => {
+    const cache = createCache(dir);
+    const ghRest = fakeGhRest(
+      rateLimitBody({
+        core: { limit: 5000, remaining: 100, reset: 2000000000 },
+        graphql: { limit: 5000, remaining: 50, reset: 2000000000 },
+      }),
+    );
+    const result = await runBudget({ ghRest }, cache, { forecast: 'health:2' });
+    // health:2 -> 2*2=4 graphqlPoints and 2*10=20 restCore.
+    expect(result.forecast?.pools.graphqlPoints).toEqual({ remaining: 50, projected: 46 });
+    expect(result.forecast?.pools.restCore).toEqual({ remaining: 100, projected: 80 });
+    expect(result.forecast?.affordable).toBe(true);
   });
 
   test('a malformed forecast entry is INVALID_INPUT', async () => {
