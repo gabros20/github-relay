@@ -292,10 +292,22 @@ export function createGhGraphql(deps: GhGraphqlDeps): GhGraphql {
     });
   }
 
+  /**
+   * `viaBisection` distinguishes "this chunk is smaller because `bisect()`
+   * split a failing larger one" from "this chunk is smaller because it's
+   * simply the natural tail of `batchRepositories`' own top-level slicing"
+   * (e.g. 27 names at batchSize 25 → a trailing chunk of 2). Only the FORMER
+   * is genuine evidence that the batch size had to shrink — `onEffectiveSize`
+   * must fire ONLY then, never for an ordinary remainder chunk (task 12 fix
+   * wave 1: a clean, error-free run was firing it on every remainder,
+   * `learnedCeilingRecorder` read that as bisection evidence, and the
+   * learned ceiling collapsed to the batch's own tail size after one run).
+   */
   async function fetchChunk<T>(
     chunk: string[],
     fragment: string,
-    onEffectiveSize?: (size: number) => void,
+    onEffectiveSize: ((size: number) => void) | undefined,
+    viaBisection: boolean,
   ): Promise<RepoResult<T>[]> {
     let result: PostResult;
     try {
@@ -309,7 +321,7 @@ export function createGhGraphql(deps: GhGraphqlDeps): GhGraphql {
     if (isTimeoutErrors(result.errors)) {
       return bisect(chunk, fragment, onEffectiveSize, 'GitHub GraphQL timeout');
     }
-    onEffectiveSize?.(chunk.length);
+    if (viaBisection) onEffectiveSize?.(chunk.length);
     return mapChunk<T>(chunk, result.data, result.errors);
   }
 
@@ -329,8 +341,8 @@ export function createGhGraphql(deps: GhGraphqlDeps): GhGraphql {
       }));
     }
     const mid = Math.ceil(chunk.length / 2);
-    const left = await fetchChunk<T>(chunk.slice(0, mid), fragment, onEffectiveSize);
-    const right = await fetchChunk<T>(chunk.slice(mid), fragment, onEffectiveSize);
+    const left = await fetchChunk<T>(chunk.slice(0, mid), fragment, onEffectiveSize, true);
+    const right = await fetchChunk<T>(chunk.slice(mid), fragment, onEffectiveSize, true);
     return [...left, ...right];
   }
 
@@ -343,7 +355,7 @@ export function createGhGraphql(deps: GhGraphqlDeps): GhGraphql {
     const out: RepoResult<T>[] = [];
     for (let i = 0; i < names.length; i += batchSize) {
       const chunk = names.slice(i, i + batchSize);
-      out.push(...(await fetchChunk<T>(chunk, fragment, opts.onEffectiveSize)));
+      out.push(...(await fetchChunk<T>(chunk, fragment, opts.onEffectiveSize, false)));
     }
     return out;
   }

@@ -16,6 +16,7 @@ import {
   updateBudgetFromOssInsight,
   updateBudgetFromRestHeaders,
 } from '../../src/commands/_shared.ts';
+import { createGhGraphql } from '../../src/sources/gh-graphql.ts';
 
 function fixtureNode(overrides: Partial<RawRepoNode> = {}): RawRepoNode {
   return {
@@ -335,6 +336,97 @@ describe('learnedCeilingRecorder', () => {
     learnedCeilingRecorder(cacheA, 'light', 25)(12);
     const cacheB = createCache(dir);
     expect(startingBatchSize(cacheB, 'light', 25)).toBe(12);
+  });
+});
+
+describe('learnedCeilingRecorder + startingBatchSize — wired to the REAL gh-graphql adapter (task 12 fix wave 1)', () => {
+  // These exercise the actual batchRepositories chunking/bisection interaction
+  // (real createGhGraphql, a fake fetch, no simulated onEffectiveSize calls) —
+  // the layer the fix-wave-1 bug actually lived in, not a hand-invoked callback.
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ghrelay-shared-realadapter-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const getToken = async () => 'test-token';
+
+  function aliasCountOf(body: unknown): number {
+    return (String(body ?? '').match(/repository\(/g) ?? []).length;
+  }
+
+  function fetchImplAlwaysSucceeds(): typeof fetch {
+    return (async (_url: string | URL | Request, init?: RequestInit) => {
+      const aliasCount = aliasCountOf(init?.body);
+      const data: Record<string, unknown> = { rateLimit: {} };
+      for (let i = 0; i < aliasCount; i++) data[`r${i}`] = { i };
+      return Response.json({ data });
+    }) as unknown as typeof fetch;
+  }
+
+  function fetchImplBisectsAbove(threshold: number): typeof fetch {
+    return (async (_url: string | URL | Request, init?: RequestInit) => {
+      const aliasCount = aliasCountOf(init?.body);
+      if (aliasCount > threshold) return new Response('gateway', { status: 502 });
+      const data: Record<string, unknown> = { rateLimit: {} };
+      for (let i = 0; i < aliasCount; i++) data[`r${i}`] = { i };
+      return Response.json({ data });
+    }) as unknown as typeof fetch;
+  }
+
+  test('a clean 27-repo run through the real adapter (no failures) never persists a ceiling', async () => {
+    const cache = createCache(dir);
+    const gh = createGhGraphql({ fetchImpl: fetchImplAlwaysSucceeds(), getToken });
+    const names = Array.from({ length: 27 }, (_, i) => `o/repo${i}`);
+    const batchSize = startingBatchSize(cache, 'light', 25);
+    expect(batchSize).toBe(25); // nothing learned yet
+    await gh.batchRepositories(names, 'x', {
+      batchSize,
+      onEffectiveSize: learnedCeilingRecorder(cache, 'light', batchSize),
+    });
+    expect(cache.budget.load().learnedCeilings.light).toBeUndefined();
+  });
+
+  test('a genuinely bisected run persists ceiling 12; a subsequent run (fresh createCache, same root) starts its FIRST call already at 12', async () => {
+    const cacheA = createCache(dir);
+    const names = Array.from({ length: 24 }, (_, i) => `o/repo${i}`);
+    const ghA = createGhGraphql({ fetchImpl: fetchImplBisectsAbove(12), getToken });
+    const batchSizeA = startingBatchSize(cacheA, 'light', 24);
+    expect(batchSizeA).toBe(24);
+    await ghA.batchRepositories(names, 'x', {
+      batchSize: batchSizeA,
+      onEffectiveSize: learnedCeilingRecorder(cacheA, 'light', batchSizeA),
+    });
+    expect(cacheA.budget.load().learnedCeilings.light).toBe(12);
+
+    // A fresh createCache instance on the SAME root — proves the ceiling
+    // round-trips through the file, not just an in-process object.
+    const cacheB = createCache(dir);
+    const batchSizeB = startingBatchSize(cacheB, 'light', 24);
+    expect(batchSizeB).toBe(12);
+
+    const callSizes: number[] = [];
+    const trackingFetch: typeof fetch = (async (
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      callSizes.push(aliasCountOf(init?.body));
+      return fetchImplBisectsAbove(12)(url, init);
+    }) as unknown as typeof fetch;
+    const ghB = createGhGraphql({ fetchImpl: trackingFetch, getToken });
+    await ghB.batchRepositories(names, 'x', {
+      batchSize: batchSizeB,
+      onEffectiveSize: learnedCeilingRecorder(cacheB, 'light', batchSizeB),
+    });
+    // Already at the learned ceiling: two natural 12-name chunks, both succeed
+    // directly — no bisection needed this run (3 calls → 2).
+    expect(callSizes).toEqual([12, 12]);
+    // Nothing new was learned (no bisection fired), so the persisted ceiling
+    // is untouched — proves the fix doesn't just avoid COLLAPSING it, it also
+    // leaves an already-correct value alone.
+    expect(cacheB.budget.load().learnedCeilings.light).toBe(12);
   });
 });
 

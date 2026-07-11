@@ -197,19 +197,20 @@ describe('batchRepositories — aliasing + partial errors', () => {
   });
 });
 
-describe('batchRepositories — adaptive bisection', () => {
-  // A source that gateways (502) whenever asked for more than 2 repos at once,
-  // succeeding for batches of <=2. The adapter must halve, never blind-retry
-  // the same size.
-  function bisectingFetch(threshold: number, status = 502) {
-    return fakeFetch((call) => {
-      if (call.aliasCount > threshold) return new Response('gateway', { status });
-      const data: Record<string, unknown> = { rateLimit: {} };
-      for (let i = 0; i < call.aliasCount; i++) data[`r${i}`] = { i };
-      return jsonResponse({ data });
-    });
-  }
+// A source that gateways (502) whenever asked for more than `threshold` repos
+// at once, succeeding for batches at or under it. The adapter must halve,
+// never blind-retry the same size. Module-scoped: shared by the adaptive
+// bisection tests and the onEffectiveSize-provenance tests below.
+function bisectingFetch(threshold: number, status = 502) {
+  return fakeFetch((call) => {
+    if (call.aliasCount > threshold) return new Response('gateway', { status });
+    const data: Record<string, unknown> = { rateLimit: {} };
+    for (let i = 0; i < call.aliasCount; i++) data[`r${i}`] = { i };
+    return jsonResponse({ data });
+  });
+}
 
+describe('batchRepositories — adaptive bisection', () => {
   test('halves a too-large batch and reports the effective successful size', async () => {
     const { fetchImpl, calls } = bisectingFetch(2);
     const gh = createGhGraphql({ fetchImpl, getToken });
@@ -263,6 +264,66 @@ describe('batchRepositories — adaptive bisection', () => {
       .catch((e) => e)) as EngineError;
     expect(err.code).toBe('AUTH_FAILED');
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('batchRepositories — onEffectiveSize only reflects genuine bisection (task 12 fix wave 1)', () => {
+  // Reproduces the bug: batchRepositories' own top-level loop slices `names`
+  // into chunks of `batchSize`, and the LAST chunk is naturally smaller
+  // whenever names.length isn't a multiple of batchSize. Pre-fix,
+  // onEffectiveSize fired for every successful chunk regardless of origin,
+  // so this "remainder" chunk was indistinguishable from a genuinely
+  // bisected one — a clean, zero-failure run would report a smaller
+  // "effective size" than requested, collapsing a caller's learned ceiling
+  // even though nothing ever failed.
+  function alwaysSucceedsFetch() {
+    return fakeFetch((call) => {
+      const data: Record<string, unknown> = { rateLimit: {} };
+      for (let i = 0; i < call.aliasCount; i++) data[`r${i}`] = { i };
+      return jsonResponse({ data });
+    });
+  }
+
+  test('a clean 27-repo run at batchSize 25 (a 2-item remainder) never fires onEffectiveSize', async () => {
+    const { fetchImpl, calls } = alwaysSucceedsFetch();
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const sizes: number[] = [];
+    const names = Array.from({ length: 27 }, (_, i) => `o/repo${i}`);
+    const results = await gh.batchRepositories(names, 'x', {
+      batchSize: 25,
+      onEffectiveSize: (s) => sizes.push(s),
+    });
+    expect(calls.map((c) => c.aliasCount)).toEqual([25, 2]);
+    expect(sizes).toEqual([]);
+    expect(results).toHaveLength(27);
+  });
+
+  test("a clean 55-id run at batchSize 50 (hydrate's shape, a 5-item remainder) never fires onEffectiveSize", async () => {
+    const { fetchImpl, calls } = alwaysSucceedsFetch();
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const sizes: number[] = [];
+    const names = Array.from({ length: 55 }, (_, i) => `o/repo${i}`);
+    const results = await gh.batchRepositories(names, 'x', {
+      batchSize: 50,
+      onEffectiveSize: (s) => sizes.push(s),
+    });
+    expect(calls.map((c) => c.aliasCount)).toEqual([50, 5]);
+    expect(sizes).toEqual([]);
+    expect(results).toHaveLength(55);
+  });
+
+  test('a genuinely bisected batch (502s above size 12) fires onEffectiveSize only for the bisected sub-chunks', async () => {
+    const { fetchImpl, calls } = bisectingFetch(12);
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const sizes: number[] = [];
+    const names = Array.from({ length: 24 }, (_, i) => `o/repo${i}`);
+    const results = await gh.batchRepositories(names, 'x', {
+      batchSize: 24,
+      onEffectiveSize: (s) => sizes.push(s),
+    });
+    expect(calls.map((c) => c.aliasCount)).toEqual([24, 12, 12]);
+    expect(sizes).toEqual([12, 12]);
+    expect(results).toHaveLength(24);
   });
 });
 
