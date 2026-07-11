@@ -15,7 +15,7 @@ See [`docs/DESIGN-v1.0.md`](./docs/DESIGN-v1.0.md) for the full design and
 
 ```bash
 # Run without installing:
-bunx github-relay-mcp doctor
+npx -p github-relay-mcp ghrelay doctor
 
 # Or install globally:
 npm i -g github-relay-mcp   # or: bun add -g github-relay-mcp
@@ -68,11 +68,11 @@ Add to your MCP client config (e.g. Claude Code, Claude Desktop):
 }
 ```
 
-The MCP surface exposes one tool per **implemented** command (`search`, `batch`, `hydrate`,
-`enrich`, `rank`, `skim`, `read`, `digest`, `budget`, `doctor`, `cache`) — thin wrappers around
-the same CLI dispatch path, zero extra business logic. Corpus/digest-writing tools (`search`,
-`batch`, `digest`) require an `out` path in their schema, so nothing large ever transits the
-model context.
+The MCP surface exposes one tool per command — all 14 (`plan`, `search`, `batch`, `hydrate`,
+`code`, `enrich`, `rank`, `health`, `skim`, `read`, `digest`, `budget`, `doctor`, `cache`) — thin
+wrappers around the same CLI dispatch path, zero extra business logic. Corpus/digest-writing
+tools (`search`, `batch`, `digest`) require an `out` path in their schema, so nothing large ever
+transits the model context.
 
 ## Use it as a Claude Code skill
 
@@ -83,10 +83,8 @@ auto-inlined into the package at build time (`scripts/generate-skill.ts` →
 
 ## Status
 
-**v0.1 — milestone A shipped**: search, batch, hydrate, enrich, rank, skim, read, digest,
-budget, doctor, cache, MCP shim, generated skill. `plan`, `code`, and `health` are milestone B —
-registered in the CLI/skill but not yet implemented (they return a clear
-`UNKNOWN_COMMAND`/"not yet implemented" envelope, never a silent no-op).
+**v0.1 shipped**: all 14 commands are implemented — plan, search, batch, hydrate, code, enrich,
+rank, health, skim, read, digest, budget, doctor, cache — plus the MCP shim and generated skill.
 
 ## License
 

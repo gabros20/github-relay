@@ -1,3 +1,8 @@
+---
+name: github-relay
+description: Research GitHub repos by intent — wide-net search/hydrate/code discovery, offline maintenance/usage/star-skeptical ranking, and deep-read only the finalists. Use when finding, evaluating, or comparing GitHub repos/libraries/tools, not when the target repo is already known and you just need to read its code.
+---
+
 # github-relay
 
 **"Research GitHub, not read GitHub."** A zero-paid-API, LLM-free CLI (`ghrelay`) + MCP server
@@ -264,6 +269,8 @@ ghrelay digest <owner/repo> [--ref SHA] [--include glob] [--exclude glob]
   many files/tokens were dropped and how to narrow. `--list` dry-runs the inclusion set (paths
   only, no content, no `--out` write). **Over MCP, `out` is ALWAYS required** — a whole-repo
   digest never transits the model inline, even in `--list` mode.
+  `--include`/`--exclude` globs support `*`, `**`, and `?` only — no `{a,b}` brace or `[abc]`
+  character-class syntax.
 
 ### `budget` — free (+1 free GET /rate_limit). Pool visibility.
 ```
