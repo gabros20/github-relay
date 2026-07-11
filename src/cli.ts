@@ -93,36 +93,78 @@ export interface ParsedArgs {
   bools: Set<string>;
 }
 
+/**
+ * Try to read `argv[i]` as a flag, mutating `flags`/`bools` in place.
+ * Returns how many tokens the flag consumed (1 for a bare flag name, 2 when
+ * a value flag also consumed the following token as its value), or 0 when
+ * `argv[i]` isn't a recognized flag at all — the caller then falls through
+ * to treating it as a command/positional instead. Split out of parseArgs
+ * purely to keep the loop's cognitive complexity down; no behavior change.
+ */
+function consumeFlagToken(
+  argv: string[],
+  i: number,
+  flags: Record<string, string[]>,
+  bools: Set<string>,
+): number {
+  const token = argv[i] as string;
+  const name = token.startsWith('--')
+    ? token.slice(2)
+    : token.startsWith('-') && token.length > 1
+      ? SHORT_FLAGS[token.slice(1)]
+      : undefined;
+  if (name === undefined) return 0;
+
+  if (BOOL_FLAGS.has(name)) {
+    bools.add(name);
+    return 1;
+  }
+  if (VALUE_FLAGS.has(name)) {
+    const value = argv[i + 1];
+    if (value === undefined) return 1;
+    const existing = flags[name] ?? [];
+    existing.push(value);
+    flags[name] = existing;
+    return 2;
+  }
+  // Unrecognized flag names are dropped, not swallowed as positionals — a
+  // typo should fail loudly downstream, not silently pollute args.
+  return 1;
+}
+
 export function parseArgs(argv: string[]): ParsedArgs {
   const positionals: string[] = [];
   const flags: Record<string, string[]> = {};
   const bools = new Set<string>();
   let command: string | undefined;
+  // Standard end-of-flags sentinel: a literal "--" token stops flag parsing
+  // for every token after it — each becomes a positional verbatim, even one
+  // that starts with "--" itself. Without this, a free-text positional like
+  // an MCP-supplied search query beginning with "--" (e.g. "--force push
+  // workflows") is misread as an attempt at an unrecognized flag and silently
+  // dropped entirely (fix wave 1, Important 2) rather than reaching the
+  // command as its actual text. Only the FIRST "--" toggles this — a second
+  // one afterward is itself just an ordinary verbatim positional, matching
+  // shell convention.
+  let endOfFlags = false;
 
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
     if (token === undefined) continue;
-    const name = token.startsWith('--')
-      ? token.slice(2)
-      : token.startsWith('-') && token.length > 1
-        ? SHORT_FLAGS[token.slice(1)]
-        : undefined;
-    if (name !== undefined) {
-      if (BOOL_FLAGS.has(name)) {
-        bools.add(name);
-      } else if (VALUE_FLAGS.has(name)) {
-        const value = argv[i + 1];
-        if (value !== undefined) {
-          const existing = flags[name] ?? [];
-          existing.push(value);
-          flags[name] = existing;
-          i += 1;
-        }
-      }
-      // Unrecognized flag names are dropped, not swallowed as positionals —
-      // a typo should fail loudly downstream, not silently pollute args.
+
+    if (!endOfFlags && token === '--') {
+      endOfFlags = true;
       continue;
     }
+
+    if (!endOfFlags) {
+      const consumed = consumeFlagToken(argv, i, flags, bools);
+      if (consumed > 0) {
+        i += consumed - 1;
+        continue;
+      }
+    }
+
     if (command === undefined) command = token;
     else positionals.push(token);
   }
