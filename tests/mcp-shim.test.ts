@@ -21,6 +21,7 @@ import {
   buildDigestArgv,
   buildDoctorArgv,
   buildEnrichArgv,
+  buildHealthArgv,
   buildHydrateArgv,
   buildPlanArgv,
   buildRankArgv,
@@ -42,7 +43,7 @@ const fakeSources = {} as Sources;
 const cache = createCache();
 
 describe('implementedCommands', () => {
-  test('includes exactly the 13 implemented commands (milestone A + plan/code, tasks 9-10)', () => {
+  test('includes all 14 registered commands (milestone A + plan/code/health, tasks 9-11)', () => {
     const names = implementedCommands()
       .map((c) => c.name)
       .sort();
@@ -55,6 +56,7 @@ describe('implementedCommands', () => {
         'digest',
         'doctor',
         'enrich',
+        'health',
         'hydrate',
         'plan',
         'rank',
@@ -65,9 +67,8 @@ describe('implementedCommands', () => {
     );
   });
 
-  test('excludes the still-milestone-B roadmap command (health)', () => {
-    const names = implementedCommands().map((c) => c.name);
-    expect(names).not.toContain('health');
+  test('health is now exposed as an MCP tool (task 11)', () => {
+    expect(implementedCommands().map((c) => c.name)).toContain('health');
   });
 });
 
@@ -280,6 +281,11 @@ describe('argv builders — batch/hydrate/enrich', () => {
   test('enrich omits bool flags when absent (never a bare --skip-deps=false)', () => {
     const argv = buildEnrichArgv({ in: 'corpus.json' });
     expect(argv).toEqual(['enrich', '--in', 'corpus.json']);
+  });
+
+  test('health spreads the finalist ids and maps --in', () => {
+    const argv = buildHealthArgv({ ids: ['a/b', 'c/d'], in: 'corpus.json' });
+    expect(argv).toEqual(['health', 'a/b', 'c/d', '--in', 'corpus.json']);
   });
 });
 

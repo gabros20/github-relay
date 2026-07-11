@@ -3,8 +3,8 @@
 // Thin @modelcontextprotocol/sdk stdio server exposing one tool per
 // IMPLEMENTED command — IMPLEMENTED_COMMAND_NAMES below is a hardcoded list,
 // NOT derived from the registry, so it must be updated by hand whenever a
-// command ships (health, still milestone B roadmap, is registry-listed
-// but excluded from the MCP surface until then). Zero
+// command ships. As of task 11 every registered command is implemented and
+// exposed here. Zero
 // business logic: each tool builds a CLI argv array and calls the SAME
 // run() path the CLI dispatches through (forced --quiet so no stderr
 // progress leaks into the stdio transport, forced --compact for the
@@ -50,6 +50,7 @@ const IMPLEMENTED_COMMAND_NAMES = new Set([
   'code',
   'enrich',
   'rank',
+  'health',
   'skim',
   'read',
   'digest',
@@ -59,11 +60,11 @@ const IMPLEMENTED_COMMAND_NAMES = new Set([
 ]);
 
 /**
- * Only the registered commands that actually dispatch. code/health are
- * milestone B (design §10) — registry-listed for CLI help/skill-generation
- * completeness, but they'd only ever return UNKNOWN_COMMAND ("not yet
- * implemented") over MCP, so they're filtered out of the tool surface here
- * rather than exposed as a broken tool.
+ * The registered commands that actually dispatch. As of task 11 this is every
+ * command in the registry; the filter is kept (rather than using COMMANDS
+ * directly) so a future registry-listed-but-unimplemented command can be added
+ * to the registry for CLI help/skill completeness without being exposed as a
+ * broken MCP tool before its runner ships.
  */
 export function implementedCommands(): CommandDef[] {
   return COMMANDS.filter((c) => IMPLEMENTED_COMMAND_NAMES.has(c.name));
@@ -174,6 +175,13 @@ export function buildEnrichArgv(args: ToolArgs): string[] {
   pushFlag(argv, 'top', args.top);
   pushBool(argv, 'skip-deps', args.skipDeps);
   pushBool(argv, 'stale-ok', args.staleOk);
+  return argv;
+}
+
+export function buildHealthArgv(args: ToolArgs): string[] {
+  const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];
+  const argv = ['health', ...ids];
+  pushFlag(argv, 'in', args.in);
   return argv;
 }
 
@@ -381,6 +389,18 @@ export const RANK_INPUT = {
   jsonl: z.boolean().describe('emit one JSON row per line instead of a rows array').optional(),
 };
 
+export const HEALTH_INPUT = {
+  ids: z
+    .array(z.string())
+    .min(1)
+    .describe(
+      'owner/repo finalists already in the corpus to run GATE-3 forensics on (~8 or fewer)',
+    ),
+  in: z
+    .string()
+    .describe('REQUIRED — corpus.json the finalists live in; signals are written in place'),
+};
+
 export const SKIM_INPUT = {
   repo: z.string().describe('owner/repo'),
   maxChars: z.number().int().positive().describe('README head length cap').optional(),
@@ -532,6 +552,12 @@ function buildServer(): McpServer {
     'rank',
     { description: describe('rank'), inputSchema: RANK_INPUT },
     async (args) => executeTool(buildRankArgv(args)),
+  );
+
+  server.registerTool(
+    'health',
+    { description: describe('health'), inputSchema: HEALTH_INPUT },
+    async (args) => executeTool(buildHealthArgv(args)),
   );
 
   server.registerTool(
