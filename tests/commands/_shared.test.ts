@@ -11,6 +11,7 @@ import {
   normalizeRepoNode,
   searchRepositories,
   updateBudgetFromGraphql,
+  updateBudgetFromRestHeaders,
 } from '../../src/commands/_shared.ts';
 
 function fixtureNode(overrides: Partial<RawRepoNode> = {}): RawRepoNode {
@@ -146,6 +147,35 @@ describe('updateBudgetFromGraphql', () => {
     const cache = createCache(dir);
     updateBudgetFromGraphql(cache, { lastRateLimit: () => null });
     expect(cache.budget.load().graphqlPoints).toBeUndefined();
+  });
+});
+
+describe('updateBudgetFromRestHeaders', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ghrelay-shared-rest-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('writes x-ratelimit-remaining/-reset into the given pool, reset converted to ISO', () => {
+    const cache = createCache(dir);
+    const headers = new Headers({
+      'x-ratelimit-remaining': '27',
+      'x-ratelimit-reset': '1752105600',
+    });
+    updateBudgetFromRestHeaders(cache, 'restSearch', headers);
+    expect(cache.budget.load().restSearch).toEqual({
+      remaining: 27,
+      resetAt: new Date(1752105600 * 1000).toISOString(),
+    });
+  });
+
+  test('headers without x-ratelimit-* are a no-op, not a crash', () => {
+    const cache = createCache(dir);
+    updateBudgetFromRestHeaders(cache, 'restSearch', new Headers());
+    expect(cache.budget.load().restSearch).toBeUndefined();
   });
 });
 

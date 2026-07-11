@@ -162,6 +162,30 @@ export function updateBudgetFromGraphql(
   });
 }
 
+/**
+ * Persist `x-ratelimit-remaining`/`x-ratelimit-reset` from a REST response
+ * into the given pool (design §4/§8 — REST search/core windows updated at
+ * runtime from live headers, never a trusted constant). `resetAt` arrives as
+ * Unix epoch seconds over the wire; converted to ISO for consistency with
+ * every other pool's `resetAt`. A response with neither header (or an
+ * adapter that didn't pass any) is a no-op, not a crash — reusable across
+ * any REST adapter call site (search's --source rest today; skim/read/digest
+ * in later tasks).
+ */
+export function updateBudgetFromRestHeaders(
+  cache: Cache,
+  pool: 'restCore' | 'restSearch',
+  headers: Headers,
+): void {
+  const remaining = headers.get('x-ratelimit-remaining');
+  const reset = headers.get('x-ratelimit-reset');
+  if (remaining === null || reset === null) return;
+  cache.budget.updatePool(pool, {
+    remaining: Number(remaining),
+    resetAt: new Date(Number(reset) * 1000).toISOString(),
+  });
+}
+
 // ── corpus load-or-create ───────────────────────────────────────────────────
 
 /** loadCorpus, but a missing file (expected absence on a first --out write) becomes a fresh corpus instead of throwing. Any other failure (bad JSON, wrong schema) still propagates. */

@@ -47,13 +47,13 @@ function fakeGhGraphql(handler: (query: string, vars?: Record<string, unknown>) 
   };
 }
 
-function fakeGhRest(handler: (path: string) => unknown) {
+function fakeGhRest(handler: (path: string) => unknown, headers: Headers = new Headers()) {
   const calls: string[] = [];
   return {
     calls,
     get: async (path: string) => {
       calls.push(path);
-      return { status: 200, headers: new Headers(), etag: null, body: handler(path) };
+      return { status: 200, headers, etag: null, body: handler(path) };
     },
     tarballUrl: async () => {
       throw new Error('not used');
@@ -260,6 +260,35 @@ describe('runSearch — --source rest fallback', () => {
       license: 'MIT',
       url: 'https://github.com/octocat/Hello-World',
     });
+  });
+
+  test('updates the restSearch budget pool from x-ratelimit-* response headers', async () => {
+    const headers = new Headers({
+      'x-ratelimit-remaining': '27',
+      'x-ratelimit-reset': '1752105600',
+    });
+    const ghRest = fakeGhRest(() => ({ total_count: 0, items: [] }), headers);
+    const cache = createCache(dir);
+    await runSearch(
+      { ghGraphql: fakeGhGraphql(() => ({})), ghRest },
+      cache,
+      baseOpts({ source: 'rest' }),
+    );
+    expect(cache.budget.load().restSearch).toEqual({
+      remaining: 27,
+      resetAt: new Date(1752105600 * 1000).toISOString(),
+    });
+  });
+
+  test('missing x-ratelimit-* headers is a no-op, not a crash', async () => {
+    const ghRest = fakeGhRest(() => ({ total_count: 0, items: [] }));
+    const cache = createCache(dir);
+    await runSearch(
+      { ghGraphql: fakeGhGraphql(() => ({})), ghRest },
+      cache,
+      baseOpts({ source: 'rest' }),
+    );
+    expect(cache.budget.load().restSearch).toBeUndefined();
   });
 });
 

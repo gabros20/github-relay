@@ -17,6 +17,7 @@ import {
   normalizeRepoNode,
   searchRepositories,
   updateBudgetFromGraphql,
+  updateBudgetFromRestHeaders,
 } from './_shared.ts';
 
 const DEFAULT_LIMIT = 30;
@@ -197,6 +198,7 @@ function restItemToRawNode(item: RestSearchItem): RawRepoNode {
 
 async function fetchRest(
   ghRest: Pick<GhRest, 'get'>,
+  cache: Cache,
   q: string,
   limit: number,
   sort?: string,
@@ -205,6 +207,7 @@ async function fetchRest(
   const res = await ghRest.get(
     `/search/repositories?q=${encodeURIComponent(q)}&per_page=${limit}${sortParam}`,
   );
+  updateBudgetFromRestHeaders(cache, 'restSearch', res.headers);
   const body = res.body as { total_count?: number; items?: RestSearchItem[] };
   return {
     repositoryCount: body.total_count ?? 0,
@@ -239,7 +242,7 @@ export async function runSearch(
   let repositoryCount: number;
   let nodes: RawRepoNode[];
   if (source === 'rest') {
-    const page = await fetchRest(sources.ghRest, q, limit, opts.sort);
+    const page = await fetchRest(sources.ghRest, cache, q, limit, opts.sort);
     repositoryCount = page.repositoryCount;
     nodes = page.nodes;
   } else {
