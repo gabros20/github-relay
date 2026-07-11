@@ -10,7 +10,7 @@ free zero-permission fine-grained PAT. No paid API keys, ever.
 ## Three golden rules
 
 1. **NEVER deep-read code during exploration.** Rank on cheap metadata first; `digest`/`read`
-   only the finalists that survive `rank` (and `health`, when it ships).
+   only the finalists that survive `rank` and `health`.
 2. **The agent expands intent; the tool executes slices.** You decompose "editor for markdown
    on macOS" into query shards, candidate ids, and code-token probes — github-relay never guesses
    intent for you, and never silently narrows a slice you didn't ask it to.
@@ -46,11 +46,11 @@ GATE 2 — enrich + rank            ~2-4 GraphQL pts + zero-quota third parties,
   → 20 fifty-token rows: score, 7 subscores, coverage, flags, truncated description. Shortlist
   ~8 from THIS, not from code. Re-weighting (`--weights`) costs 0 — refetches nothing.
 
-GATE 3 — verify                   health: roadmap (v0.1 milestone B). skim: available now.
+GATE 3 — verify                   1-2 GraphQL pts + 1 ClickHouse POST + N REST, then skim
+  ghrelay health <ids...> --in corpus.json  # completes C/D/F: latency, burstiness, bus factor
   ghrelay skim <owner/repo>       # tree inventory + README head, 2 REST calls (cached: 0)
-  Cut to 2-3 survivors on structure + README signal. `health` (issue latency, star-velocity
-  burstiness, bus factor, coverage→7/7) lands in a later task — until then, rank's `coverage`
-  field is honest about which groups (C/D/F) are still thin.
+  Run `health` on the ~8 shortlisted finalists (coverage → 7/7 where B is present), then `skim`
+  the survivors. Cut to 2-3 on structure + README signal + the completed C/D/F subscores.
 
 GATE 4 — deep read                expensive: digest / read
   ghrelay digest <owner/repo> --max-tokens 20000 --out digest.md
@@ -204,6 +204,26 @@ ghrelay rank <corpus.json> [--profile build-on|dissect|ideas] [--weights A=25,B=
   `possible-fake-stars`, `ratio-anomaly`) tell you WHY a star count might be misleading, not
   just that it's high.
 
+### `health` — 1-2 GraphQL pts per ≤10 ids + 1 ClickHouse POST + 1 REST call per id. GATE 3 forensics.
+```
+ghrelay health <ids...> --in corpus.json
+```
+- One command completes the C/D/F groups on the finalists (design's GATE-3 consolidation), then
+  re-scores and reports each repo's new C/D/F subscores + flags + coverage. Writes signals into
+  the corpus in place; run it AFTER `enrich`, on the ~8 you shortlisted from `rank`.
+- **D (responsiveness)** — a heavy GraphQL fragment (aliased, ≤10 ids/batch): median close
+  latency of the last ~20 non-bot closed issues + a 90-day open/closed issue split.
+- **F (popularity-validity)** — ONE ClickHouse playground POST for the whole id set: lifetime
+  monthly WatchEvent histograms → **burstiness** (max-month share), plus Issues/Fork events for
+  the viral-corroboration downgrade. If ClickHouse is down, F degrades to `f_coverage:"partial"`
+  (never silent). A renamed repo's velocity is undercounted upstream → `partial-renamed`, no
+  false fake-star penalty. `starredAt` is a secondary first:100 sample, gated on a live probe of
+  the contested field — restricted/null shapes degrade the sample to absent, F leans on ClickHouse.
+- **C (community)** — serialized `/contributors?per_page=5` per id → top-1 commit share (bus
+  factor); a top-1 > 0.8 raises the `single-maintainer` flag.
+- Flags fire through the SAME scoring rules `rank` uses — a star burst alone only flags; a
+  penalty needs the corroborated combo (burst + engagement-zero + >500 stars + >6mo age).
+
 ### `skim` — 2 REST core calls (cached: 0). The cheap structural peek, GATE 3.5.
 ```
 ghrelay skim <owner/repo> [--max-chars 4000] [--tree-only] [--in corpus.json]
@@ -272,12 +292,11 @@ ghrelay cache gc [--older-than 30d]
   — refuses without `--confirm` (`CONFIRMATION_REQUIRED`, zero deletion attempted). `gc` prunes
   etags older than `--older-than` (default 30d) plus tarballs and now-orphaned etag bodies.
 
-### Roadmap (v0.1 milestone B — registry-listed, not yet implemented)
+### Deferred to v0.2 (registry-stable, spec'd but not in this release)
 
-- **`health`** — GATE 3 forensics consolidation: issue close-latency, ClickHouse lifetime
-  star-velocity histograms (burstiness, viral-corroboration), `/contributors` bus factor;
-  auto-recomputes C/D/F and coverage. Calling it returns `UNKNOWN_COMMAND` with a "not yet
-  implemented" message — don't script against it yet.
+- NL discovery lanes (Exa / Firecrawl, optional-key), a REST code-search verification lane, and
+  snapshot-diff velocity (our own cached stargazerCount across sessions) for the post-`starredAt`
+  world. Every v0.1 command above is implemented — nothing in the funnel returns "not yet".
 
 ---
 
@@ -319,8 +338,7 @@ never guess a shorter wait.**
   `coverage` reflects the gap honestly.
 - `CONFIRMATION_REQUIRED` — a destructive op (`cache clear`) needs `--confirm`; nothing was
   touched.
-- `UNKNOWN_COMMAND` — a name outside the registry, OR a registered-but-not-yet-implemented
-  command (`health` — see Roadmap above).
+- `UNKNOWN_COMMAND` — a name outside the registry (every registered command is implemented).
 - `FETCH_FAILED` — a generic transport/parse failure not covered by a more specific code.
 
 ---

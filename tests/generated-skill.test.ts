@@ -22,14 +22,16 @@ describe('generated skill.ts', () => {
     );
   });
 
-  test('documents every implemented command and marks milestone-B ones as roadmap', () => {
+  test('documents every registered command with its own section (all shipped as of task 11)', () => {
     for (const cmd of [
       'plan',
       'search',
       'batch',
       'hydrate',
+      'code',
       'enrich',
       'rank',
+      'health',
       'skim',
       'read',
       'digest',
@@ -39,9 +41,8 @@ describe('generated skill.ts', () => {
     ]) {
       expect(githubRelaySkill).toContain(`### \`${cmd}\``);
     }
-    expect(githubRelaySkill).toContain('### Roadmap (v0.1 milestone B');
-    expect(githubRelaySkill).toContain('`code`');
-    expect(githubRelaySkill).toContain('`health`');
+    // health is a real command now, not a roadmap entry — no "not yet implemented" copy remains.
+    expect(githubRelaySkill).not.toContain('not yet implemented');
   });
 
   test('carries the closed error-code set', () => {
