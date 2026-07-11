@@ -269,8 +269,38 @@ describe('dispatch — code (task 10)', () => {
     expect(envelope.ok).toBe(false);
     if (envelope.ok) throw new Error('expected failure');
     expect(envelope.error.code).toBe('INVALID_INPUT');
-    expect(envelope.error.hint).toBe('code lanes need code tokens; use search for concepts');
+    expect(envelope.error.hint).toBe(
+      'code lanes need code tokens; use search for concepts — if this is a literal code string, re-run with --literal',
+    );
     expect(called).toBe(false);
+  });
+
+  test('a realistic ≤5-word literal error string now passes without --literal (fix wave 1, IMP 2)', async () => {
+    const sources = fakeSources();
+    sources.grepApp = { search: async () => [grepAppHit()] };
+    const { stdout, exitCode } = await run(
+      ['code', 'failed', 'to', 'connect', 'to', 'database', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+  });
+
+  test('--literal forces a heavily NL-shaped pattern through', async () => {
+    const sources = fakeSources();
+    sources.grepApp = { search: async () => [grepAppHit()] };
+    const { stdout, exitCode } = await run(
+      ['code', '--literal', 'how', 'to', 'parse', 'markdown', 'files', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
   });
 });
 

@@ -166,7 +166,7 @@ describe('argv builders — code', () => {
     expect(argv).toEqual(['code', '--', 'useState(']);
   });
 
-  test('folds repeatable lang and scalar repo/path/limit/out in, all before "--"', () => {
+  test('folds repeatable lang and scalar repo/path/limit/out/literal in, all before "--"', () => {
     const argv = buildCodeArgv({
       pattern: 'useState(',
       lang: ['TypeScript', 'TSX'],
@@ -174,6 +174,7 @@ describe('argv builders — code', () => {
       path: 'src/',
       limit: 10,
       out: 'corpus.json',
+      literal: true,
     });
     expect(argv).toEqual([
       'code',
@@ -189,9 +190,15 @@ describe('argv builders — code', () => {
       '10',
       '--out',
       'corpus.json',
+      '--literal',
       '--',
       'useState(',
     ]);
+  });
+
+  test('omits --literal when absent (never a bare --literal=false)', () => {
+    const argv = buildCodeArgv({ pattern: 'useState(' });
+    expect(argv).not.toContain('--literal');
   });
 
   test('a pattern that itself starts with "--" survives parseArgs intact', () => {
@@ -216,6 +223,13 @@ describe('CODE_INPUT — pattern required, everything else optional (out is NOT 
     expect(z.object(CODE_INPUT).safeParse({ pattern: 'useState(', limit: 101 }).success).toBe(
       false,
     );
+  });
+
+  test('accepts an explicit literal:true (fix wave 1, IMP 2 escape hatch)', () => {
+    expect(
+      z.object(CODE_INPUT).safeParse({ pattern: 'how to parse markdown files', literal: true })
+        .success,
+    ).toBe(true);
   });
 });
 

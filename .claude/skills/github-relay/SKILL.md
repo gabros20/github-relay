@@ -144,15 +144,21 @@ ghrelay hydrate <owner/repo...> [--out corpus.json] [-]
 
 ### `code` — free, grep.app lane. Code-token/regex evidence, GATE 1 (optional).
 ```
-ghrelay code <pattern> [--lang X --repo o/r --path P] [--limit 20] [--out corpus.json]
+ghrelay code <pattern> [--lang X --repo o/r --path P] [--limit 20] [--literal] [--out corpus.json]
 ```
 - `pattern` must be an actual code token or regex, NOT natural language — `useState(`,
-  `import React from`, `(?s)try {.*await`. A prose-shaped pattern (more than 4 space-separated,
-  purely-lowercase words with no code punctuation anywhere) is rejected client-side with
-  `INVALID_INPUT` and the hint "code lanes need code tokens; use search for concepts" — zero
-  network spent either way. `--lang` (repeatable), `--repo`, `--path` filter grep.app's index
-  (~1M top repos, license inline); `--limit` defaults to 20, capped at 100 (grep.app's own tool
-  has no server-side limit, so this command truncates client-side).
+  `import React from`, `(?s)try {.*await`. The rejection heuristic is deliberately biased toward
+  letting things through (a false accept just costs one cheap grep.app call; a false reject
+  blocks a legitimate search): a punctuation-free pattern is rejected client-side with
+  `INVALID_INPUT` only when it has 6+ plain lowercase words, OR looks question-shaped (contains
+  how/what/why/where/when/should/"best way"/"can i") — a real multi-word literal like `failed to
+  connect to database` (5 words, no question shape) passes straight through. The hint always
+  names the escape: `"code lanes need code tokens; use search for concepts — if this is a
+  literal code string, re-run with --literal"`. `--literal` bypasses the heuristic entirely for
+  anything it still gets wrong — zero network spent either way when rejected. `--lang`
+  (repeatable), `--repo`, `--path` filter grep.app's index (~1M top repos, license inline);
+  `--limit` defaults to 20, capped at 100 (grep.app's own tool has no server-side limit, so this
+  command truncates client-side).
 - Without `--out`: prints hit rows `{repo, path, line, snippet (truncated ~200 chars), lang?,
   license?}` plus a `repos` footer — the distinct, sorted owner/repo ids the matches touched.
   **Hydrate-ready, never auto-hydrated**: pipe `repos` straight into `hydrate` yourself. With

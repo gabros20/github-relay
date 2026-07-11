@@ -30,9 +30,12 @@ function hintFor(code: ErrorCode, message: string): string | undefined {
       // code's client-side NL-rejection gate (design §3 item 5) is the one
       // INVALID_INPUT that carries a specific, code-generated hint — same
       // message-sniffing pattern as RESULT_CAP above, since EngineError
-      // itself has no hint field of its own.
+      // itself has no hint field of its own. The hint always names the
+      // --literal escape hatch (fix wave 1, IMP 2): the heuristic is
+      // deliberately permissive but still imperfect, so every rejection
+      // tells the caller exactly how to force it through.
       return message.includes('looks like natural language')
-        ? 'code lanes need code tokens; use search for concepts'
+        ? 'code lanes need code tokens; use search for concepts — if this is a literal code string, re-run with --literal'
         : undefined;
     case 'NOT_FOUND':
     case 'UNKNOWN_COMMAND':

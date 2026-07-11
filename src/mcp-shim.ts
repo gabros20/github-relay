@@ -162,6 +162,7 @@ export function buildCodeArgv(args: ToolArgs): string[] {
   pushFlag(argv, 'path', args.path);
   pushFlag(argv, 'limit', args.limit);
   pushFlag(argv, 'out', args.out);
+  pushBool(argv, 'literal', args.literal);
   argv.push('--', String(args.pattern ?? ''));
   return argv;
 }
@@ -316,7 +317,8 @@ export const CODE_INPUT = {
     .string()
     .describe(
       "a literal code token or regex pattern (grep-style), e.g. 'useState(', 'import React from', " +
-        "'(?s)try {.*await' — NOT natural language; a prose question is rejected with INVALID_INPUT",
+        "'(?s)try {.*await' — a long or question-shaped prose sentence is rejected with " +
+        'INVALID_INPUT; set literal:true to bypass that check for a genuine literal string',
     ),
   lang: z.array(z.string()).describe("filter by language, e.g. ['TypeScript', 'TSX']").optional(),
   repo: z
@@ -330,6 +332,14 @@ export const CODE_INPUT = {
     .describe(
       'corpus.json path to merge minimal source:"code" rows into (owner/repo + license only; ' +
         "omit to get hit rows back — full enrichment is hydrate/enrich's job)",
+    )
+    .optional(),
+  literal: z
+    .boolean()
+    .describe(
+      'bypass the natural-language rejection heuristic entirely — set this when pattern is a ' +
+        'genuine literal code/error string the heuristic might otherwise misclassify (e.g. a long ' +
+        'multi-word log message)',
     )
     .optional(),
 };

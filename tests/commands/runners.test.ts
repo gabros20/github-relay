@@ -78,6 +78,27 @@ describe('guard', () => {
     expect(envelope.error.hint).toContain('--confirm');
   });
 
+  test("INVALID_INPUT from code's NL-rejection gate → hint always names the --literal escape", async () => {
+    const envelope = await guard('code', async () => {
+      throw new EngineError(
+        'INVALID_INPUT',
+        "'how to parse markdown files' looks like natural language, not a code token/pattern",
+      );
+    });
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.hint).toContain('--literal');
+  });
+
+  test('a plain INVALID_INPUT unrelated to the NL gate has no hint', async () => {
+    const envelope = await guard('search', async () => {
+      throw new EngineError('INVALID_INPUT', 'provide a search query or at least one filter flag');
+    });
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.hint).toBeUndefined();
+  });
+
   test('NOT_FOUND → no hint (self-explanatory)', async () => {
     const envelope = await guard('read', async () => {
       throw new EngineError('NOT_FOUND', 'repo does not exist');

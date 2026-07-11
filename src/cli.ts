@@ -79,6 +79,7 @@ const BOOL_FLAGS = new Set([
   'jsonl',
   'tree-only',
   'list',
+  'literal',
   'offline',
   'confirm',
   'quiet',
