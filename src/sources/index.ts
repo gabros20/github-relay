@@ -24,7 +24,7 @@ export interface CreateSourcesOptions extends Partial<Seams> {
   env?: Record<string, string | undefined>;
   /** Shell-out seam for `gh auth token`. */
   exec?: Exec;
-  /** Streaming file-sink seam for gh-rest tarball downloads (defaults to a Bun FileSink). */
+  /** Streaming file-sink seam for gh-rest tarball downloads (defaults to a node:fs write stream). */
   createSink?: CreateSink;
 }
 

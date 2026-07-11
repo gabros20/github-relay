@@ -36,6 +36,7 @@
     "test:watch": "bun run generate && bun test --watch",
     "test:coverage": "bun run generate && bun test --coverage",
     "smoke:mcp": "bun run ./scripts/mcp-smoke.ts",
+    "smoke:node": "node ./scripts/node-smoke.mjs",
     "check": "bun run typecheck && bun run typecheck:tests && bun run lint && bun test"
   },
   "devDependencies": {
