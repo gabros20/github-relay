@@ -58,9 +58,23 @@ export function updatePool(
   return next;
 }
 
-export function updateGrepAppBreaker(path: string, state: GrepAppBreaker): Budget {
+/**
+ * `state` may be a plain replacement value (unchanged behavior) OR a reducer
+ * `(prev) => next` — the reducer form loads the CURRENT persisted value at
+ * write time rather than trusting a value the caller captured earlier, which
+ * matters whenever anything (e.g. a network call) happened between "read"
+ * and "write": two callers computing "previous + 1" from the same
+ * caller-captured snapshot collapse two real updates into one (fix wave 1,
+ * task 10 IMP 1 — the code command's circuit breaker hit exactly this).
+ * `prev` is `undefined` when no breaker state has ever been persisted.
+ */
+export function updateGrepAppBreaker(
+  path: string,
+  state: GrepAppBreaker | ((prev: GrepAppBreaker | undefined) => GrepAppBreaker),
+): Budget {
   const budget = loadBudget(path);
-  const next: Budget = { ...budget, grepApp: state };
+  const grepApp = typeof state === 'function' ? state(budget.grepApp) : state;
+  const next: Budget = { ...budget, grepApp };
   saveBudget(path, next);
   return next;
 }

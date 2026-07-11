@@ -57,7 +57,9 @@ export interface Cache {
     // only pool that carries lastCost, but the union isn't narrowed by pool
     // name here either — same shape as the underlying store.
     updatePool(pool: SimplePool, state: RateWindow | GraphqlPoints): Budget;
-    updateGrepAppBreaker(state: GrepAppBreaker): Budget;
+    updateGrepAppBreaker(
+      state: GrepAppBreaker | ((prev: GrepAppBreaker | undefined) => GrepAppBreaker),
+    ): Budget;
     updateLearnedCeiling(fragmentWeight: string, batchSize: number): Budget;
   };
 }

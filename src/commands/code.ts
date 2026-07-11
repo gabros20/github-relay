@@ -30,6 +30,8 @@ export interface CodeOpts {
   path?: string;
   limit?: string;
   out?: string;
+  /** Bypasses the NL-rejection heuristic entirely (fix wave 1, IMP 2). */
+  literal?: boolean;
 }
 
 export interface CodeHitRow {
@@ -65,6 +67,7 @@ export function codeOptsFromArgs(parsed: ParsedArgs): CodeOpts {
     path: parsed.flags.path?.[0],
     limit: parsed.flags.limit?.[0],
     out: parsed.flags.out?.[0],
+    literal: parsed.bools.has('literal'),
   };
 }
 
@@ -72,28 +75,38 @@ export function codeOptsFromArgs(parsed: ParsedArgs): CodeOpts {
 // grep.app is a literal/regex code search (like `grep`), not a keyword or
 // intent search — feeding it natural language wastes a call and returns
 // nothing useful. The heuristic is deliberately simple and documented rather
-// than "smart": ANY code-punctuation character anywhere in the pattern
-// short-circuits straight to "code" (a single `(` or `.` is already strong
-// evidence — `useState(`, `import React from 'react'`), and only a pattern
-// with ZERO such punctuation is then checked for looking like a prose
-// sentence — more than 4 space-separated, purely-lowercase-alphabetic words.
+// than "smart", and deliberately biased toward PERMISSIVENESS (fix wave 1,
+// IMP 2 — controller policy: a false accept costs one cheap grep.app call, a
+// false reject blocks a legitimate literal-string search, so the asymmetric
+// cost favors letting borderline cases through): ANY code-punctuation
+// character anywhere in the pattern short-circuits straight to "code" (a
+// single `(` or `.` is already strong evidence — `useState(`, `import React
+// from 'react'`); a punctuation-free pattern is rejected as NL only when it
+// has 6+ space-separated, purely-lowercase-alphabetic words (a genuinely
+// long sentence) OR looks question-shaped (contains how/what/why/where/
+// when/should/"best way"/"can i") — a real multi-word literal like "failed
+// to connect to database" (5 words, no question shape) now passes straight
+// through. `--literal` bypasses this heuristic entirely for anything the
+// heuristic still gets wrong.
 const CODE_PUNCTUATION_RE = /[{}()=>;._'"`/-]/;
 const LOWERCASE_WORD_RE = /^[a-z]+$/;
-const NL_WORD_THRESHOLD = 4;
+const NL_WORD_THRESHOLD = 6;
+const QUESTION_SHAPE_RE = /\b(?:how|what|why|where|when|should|best way|can i)\b/i;
 
 /** Exported for direct testing (task-10 brief: tested on both sides of the line). */
 export function looksLikeNaturalLanguage(pattern: string): boolean {
   if (CODE_PUNCTUATION_RE.test(pattern)) return false;
   const words = pattern.split(/\s+/).filter(Boolean);
   const lowercaseWords = words.filter((w) => LOWERCASE_WORD_RE.test(w));
-  return lowercaseWords.length > NL_WORD_THRESHOLD;
+  if (lowercaseWords.length >= NL_WORD_THRESHOLD) return true;
+  return QUESTION_SHAPE_RE.test(pattern);
 }
 
-function validatePattern(pattern: string): void {
+function validatePattern(pattern: string, literal: boolean): void {
   if (!pattern) {
     throw new EngineError('INVALID_INPUT', 'provide a code pattern to search for');
   }
-  if (looksLikeNaturalLanguage(pattern)) {
+  if (!literal && looksLikeNaturalLanguage(pattern)) {
     throw new EngineError(
       'INVALID_INPUT',
       `'${pattern}' looks like natural language, not a code token/pattern`,
@@ -131,21 +144,101 @@ export function isBreakerCountable(code: string): boolean {
   return code === 'RATE_LIMITED' || code === 'SOURCE_DOWN';
 }
 
-function recordBreakerFailure(
+/**
+ * Reducer form (fix wave 1, IMP 1): computes `failures` from whatever is
+ * CURRENTLY persisted at write time (`cache.budget.updateGrepAppBreaker`'s
+ * reducer overload), not from the `breaker` snapshot `runCode` captured
+ * before the network call — closing the same stale-snapshot gap at the
+ * store level that `withBreakerLock` closes at the command level.
+ */
+function recordBreakerFailure(cache: Cache, phase: BreakerPhase, now: number): void {
+  cache.budget.updateGrepAppBreaker((prev) => {
+    const failures = (prev?.consecutiveFailures ?? 0) + 1;
+    if (phase === 'probe' || failures >= BREAKER_THRESHOLD) {
+      return {
+        breakerState: 'open',
+        consecutiveFailures: failures,
+        retryAt: new Date(now + BREAKER_COOLDOWN_MS).toISOString(),
+      };
+    }
+    return { breakerState: 'closed', consecutiveFailures: failures };
+  });
+}
+
+// ── single-flight lock (fix wave 1, IMP 1) ───────────────────────────────
+// A module-level promise-chain mutex serializing the ENTIRE breaker-check ->
+// network-call -> breaker-write critical section. Without this, two
+// concurrent `code` invocations (e.g. the MCP shim's shared singleton Cache
+// under two parallel tool calls) can each read the breaker before either
+// writes anything: two failures collapse into consecutiveFailures:1 (the
+// breaker never trips), or two calls both see "open, cooldown elapsed" and
+// both fire as the half-open probe. Node's single-threaded event loop makes
+// a promise-chain sufficient — `breakerLock` is reassigned synchronously
+// (no `await` in between), so no other call can splice itself into the
+// middle of an already-queued link. Deliberately IN-PROCESS only: this does
+// NOT protect against two separate OS processes racing the same cache root
+// (out of scope — single-user CLI, and budget.json's writes are individually
+// atomic file replaces, so the worst a cross-process race can do is lose an
+// update, never corrupt the file).
+let breakerLock: Promise<unknown> = Promise.resolve();
+
+function withBreakerLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = breakerLock.then(fn, fn);
+  // Never let a rejection permanently wedge the queue for later callers —
+  // the ORIGINAL rejection still propagates to whoever awaits `result`.
+  breakerLock = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+async function searchWithBreaker(
+  sources: CodeSources,
   cache: Cache,
-  breaker: GrepAppBreaker,
-  phase: BreakerPhase,
-  now: number,
-): void {
-  const failures = breaker.consecutiveFailures + 1;
-  if (phase === 'probe' || failures >= BREAKER_THRESHOLD) {
-    cache.budget.updateGrepAppBreaker({
-      breakerState: 'open',
-      consecutiveFailures: failures,
-      retryAt: new Date(now + BREAKER_COOLDOWN_MS).toISOString(),
+  pattern: string,
+  opts: CodeOpts,
+  now: () => number,
+): Promise<GrepAppHit[]> {
+  const breaker = cache.budget.load().grepApp ?? CLOSED_BREAKER;
+  const phase = breakerPhase(breaker, now());
+
+  if (phase === 'blocked') {
+    const retryAfterMs = breaker.retryAt
+      ? Math.max(0, Date.parse(breaker.retryAt) - now())
+      : undefined;
+    throw new EngineError(
+      'SOURCE_DOWN',
+      `grep.app circuit breaker is open after ${breaker.consecutiveFailures} consecutive failures`,
+      undefined,
+      retryAfterMs,
+    );
+  }
+  if (phase === 'probe') {
+    cache.budget.updateGrepAppBreaker((prev) => ({
+      ...(prev ?? CLOSED_BREAKER),
+      breakerState: 'half-open',
+    }));
+  }
+
+  try {
+    const hits = await sources.grepApp.search({
+      query: pattern,
+      lang: opts.lang.length > 0 ? opts.lang : undefined,
+      repo: opts.repo,
+      path: opts.path,
     });
-  } else {
-    cache.budget.updateGrepAppBreaker({ breakerState: 'closed', consecutiveFailures: failures });
+    cache.budget.updateGrepAppBreaker((prev) =>
+      prev && prev.breakerState === 'closed' && prev.consecutiveFailures === 0
+        ? prev
+        : { breakerState: 'closed', consecutiveFailures: 0 },
+    );
+    return hits;
+  } catch (e) {
+    if (e instanceof EngineError && isBreakerCountable(e.code)) {
+      recordBreakerFailure(cache, phase, now());
+    }
+    throw e;
   }
 }
 
@@ -175,45 +268,10 @@ export async function runCode(
   const now = deps.now ?? Date.now;
 
   const pattern = opts.pattern.trim();
-  validatePattern(pattern);
+  validatePattern(pattern, opts.literal === true);
   const limit = parseLimit(opts.limit);
 
-  const breaker = cache.budget.load().grepApp ?? CLOSED_BREAKER;
-  const phase = breakerPhase(breaker, now());
-
-  if (phase === 'blocked') {
-    const retryAfterMs = breaker.retryAt
-      ? Math.max(0, Date.parse(breaker.retryAt) - now())
-      : undefined;
-    throw new EngineError(
-      'SOURCE_DOWN',
-      `grep.app circuit breaker is open after ${breaker.consecutiveFailures} consecutive failures`,
-      undefined,
-      retryAfterMs,
-    );
-  }
-  if (phase === 'probe') {
-    cache.budget.updateGrepAppBreaker({ ...breaker, breakerState: 'half-open' });
-  }
-
-  let hits: GrepAppHit[];
-  try {
-    hits = await sources.grepApp.search({
-      query: pattern,
-      lang: opts.lang.length > 0 ? opts.lang : undefined,
-      repo: opts.repo,
-      path: opts.path,
-    });
-  } catch (e) {
-    if (e instanceof EngineError && isBreakerCountable(e.code)) {
-      recordBreakerFailure(cache, breaker, phase, now());
-    }
-    throw e;
-  }
-
-  if (breaker.breakerState !== 'closed' || breaker.consecutiveFailures !== 0) {
-    cache.budget.updateGrepAppBreaker({ breakerState: 'closed', consecutiveFailures: 0 });
-  }
+  const hits = await withBreakerLock(() => searchWithBreaker(sources, cache, pattern, opts, now));
 
   const limited = hits.slice(0, limit);
   const repos = Array.from(new Set(limited.map((h) => h.repo))).sort();

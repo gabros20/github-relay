@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { GrepAppBreaker } from '../../src/cache/budget.ts';
 import {
   loadBudget,
   saveBudget,
@@ -92,6 +93,53 @@ describe('updateGrepAppBreaker', () => {
     });
     updateGrepAppBreaker(file, { breakerState: 'closed', consecutiveFailures: 0 });
     expect(loadBudget(file).grepApp).toEqual({ breakerState: 'closed', consecutiveFailures: 0 });
+  });
+
+  // Fix wave 1, IMP 1: a plain replacement state computed from a snapshot
+  // captured before some earlier async work (e.g. a network call) is exactly
+  // how two concurrent callers can each independently compute
+  // "previous + 1" from the SAME stale previous value and collapse two real
+  // failures into one recorded failure. A reducer form that loads fresh at
+  // write time closes that gap at the store level.
+  describe('reducer form — loads fresh at write time', () => {
+    test('a function updater receives the CURRENT persisted value, not a caller-captured snapshot', () => {
+      updateGrepAppBreaker(file, { breakerState: 'closed', consecutiveFailures: 1 });
+      updateGrepAppBreaker(file, (prev) => ({
+        breakerState: 'closed',
+        consecutiveFailures: (prev?.consecutiveFailures ?? 0) + 1,
+      }));
+      expect(loadBudget(file).grepApp).toEqual({ breakerState: 'closed', consecutiveFailures: 2 });
+    });
+
+    test('a function updater sees undefined when no breaker state has ever been persisted', () => {
+      const seen: (GrepAppBreaker | undefined)[] = [];
+      updateGrepAppBreaker(file, (prev) => {
+        seen.push(prev);
+        return {
+          breakerState: 'closed',
+          consecutiveFailures: (prev?.consecutiveFailures ?? 0) + 1,
+        };
+      });
+      expect(seen).toEqual([undefined]);
+      expect(loadBudget(file).grepApp).toEqual({ breakerState: 'closed', consecutiveFailures: 1 });
+    });
+
+    test('two sequential reducer calls each build on what the previous one actually wrote', () => {
+      const bump = () =>
+        updateGrepAppBreaker(file, (prev) => ({
+          breakerState: 'closed',
+          consecutiveFailures: (prev?.consecutiveFailures ?? 0) + 1,
+        }));
+      bump();
+      bump();
+      bump();
+      expect(loadBudget(file).grepApp).toEqual({ breakerState: 'closed', consecutiveFailures: 3 });
+    });
+
+    test('a plain-object updater still works exactly as before (backward compatible)', () => {
+      updateGrepAppBreaker(file, { breakerState: 'open', consecutiveFailures: 5 });
+      expect(loadBudget(file).grepApp).toEqual({ breakerState: 'open', consecutiveFailures: 5 });
+    });
   });
 });
 

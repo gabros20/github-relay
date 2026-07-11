@@ -99,10 +99,11 @@ describe('codeOptsFromArgs', () => {
       path: 'src/',
       limit: '10',
       out: 'corpus.json',
+      literal: false,
     });
   });
 
-  test('defaults lang to an empty array and leaves repo/path/limit/out undefined', () => {
+  test('defaults lang to an empty array, literal to false, and leaves repo/path/limit/out undefined', () => {
     expect(codeOptsFromArgs(parseArgs(['code', 'useState(']))).toEqual({
       pattern: 'useState(',
       lang: [],
@@ -110,19 +111,40 @@ describe('codeOptsFromArgs', () => {
       path: undefined,
       limit: undefined,
       out: undefined,
+      literal: false,
+    });
+  });
+
+  test('parses --literal', () => {
+    expect(
+      codeOptsFromArgs(parseArgs(['code', '--literal', 'how to parse markdown files'])),
+    ).toEqual({
+      pattern: 'how to parse markdown files',
+      lang: [],
+      repo: undefined,
+      path: undefined,
+      limit: undefined,
+      out: undefined,
+      literal: true,
     });
   });
 });
 
 // ── NL heuristic (task-10 acceptance: ≥4 positive + ≥4 negative, tested both sides) ──
+// Fix wave 1, IMP 2 softened the heuristic (controller policy: a false
+// accept costs one cheap grep.app call, a false reject blocks a legitimate
+// literal-string search — the asymmetric cost favors permissiveness): reject
+// only 6+ plain lowercase words, or anything question-shaped, no matter how
+// short. The original brief's NL negatives all still reject below, via one
+// trigger or the other.
 
 describe('looksLikeNaturalLanguage', () => {
   const nlCases = [
-    'how to parse markdown files',
-    'what is the best way to test',
-    'explain how async functions work please',
-    'find me a good react hook library',
-    'one two three four five',
+    'how to parse markdown files', // question-shaped ("how"), 5 words
+    'what is the best way to test', // question-shaped ("what", "best way")
+    'explain how async functions work please', // question-shaped ("how")
+    'find me a good react hook library', // 7 plain words — over the 6-word threshold
+    'one two three four five six', // 6 plain words — exactly at the threshold
   ];
   for (const phrase of nlCases) {
     test(`'${phrase}' is rejected as natural language`, () => {
@@ -136,11 +158,32 @@ describe('looksLikeNaturalLanguage', () => {
     'async function',
     '(?s)try {.*await',
     'getServerSession',
-    'export default function App', // exactly 4 words — boundary, not > 4
+    'export default function App', // exactly 4 plain words — well under the 6-word threshold
   ];
   for (const pattern of codeCases) {
     test(`'${pattern}' is accepted as a code token/pattern`, () => {
       expect(looksLikeNaturalLanguage(pattern)).toBe(false);
+    });
+  }
+
+  // Fix wave 1, IMP 2 — the reviewer's repro: 8 realistic multi-word literal
+  // strings (error messages, log lines) a developer might legitimately grep
+  // for, ALL previously rejected by the old >4-word rule. None of these are
+  // question-shaped and all are 5 words or fewer, so the softened heuristic
+  // now accepts every one of them without needing --literal at all.
+  const previouslyRejectedLiterals = [
+    'failed to connect to database',
+    'unable to open file',
+    'permission denied for user',
+    'connection timed out after retries',
+    'invalid token provided by client',
+    'cannot read property of undefined',
+    'index out of bounds exception',
+    'no such file or directory',
+  ];
+  for (const literal of previouslyRejectedLiterals) {
+    test(`'${literal}' (a realistic ≤5-word literal) now passes without --literal`, () => {
+      expect(looksLikeNaturalLanguage(literal)).toBe(false);
     });
   }
 });
@@ -180,6 +223,32 @@ describe('runCode — pattern validation (no network)', () => {
     await expect(runCode({ grepApp }, cache, baseOpts({ limit: 'nope' }))).rejects.toMatchObject({
       code: 'INVALID_INPUT',
     });
+    expect(grepApp.calls).toHaveLength(0);
+  });
+
+  // Fix wave 1, IMP 2 — --literal bypasses the NL heuristic entirely, even
+  // for a pattern the heuristic would still (correctly, by its own rules)
+  // flag — it's an explicit escape hatch, not a heuristic tweak.
+  test('--literal bypasses the NL heuristic entirely, even for a heavily question-shaped pattern', async () => {
+    const cache = createCache(dir);
+    const grepApp = fakeGrepApp(() => [hit()]);
+    const result = await runCode(
+      { grepApp },
+      cache,
+      baseOpts({ pattern: 'how to parse markdown files', literal: true }),
+    );
+    expect(result.count).toBe(1);
+    expect(grepApp.calls).toEqual([
+      { query: 'how to parse markdown files', lang: undefined, repo: undefined, path: undefined },
+    ]);
+  });
+
+  test('an empty pattern is still rejected even with --literal (literal bypasses the NL check, not the empty check)', async () => {
+    const cache = createCache(dir);
+    const grepApp = fakeGrepApp(() => []);
+    await expect(
+      runCode({ grepApp }, cache, baseOpts({ pattern: '', literal: true })),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
     expect(grepApp.calls).toHaveLength(0);
   });
 });
@@ -473,5 +542,59 @@ describe('runCode — circuit breaker integration', () => {
     );
     expect(err.code).toBe('SOURCE_DOWN');
     expect(grepAppB.calls).toHaveLength(0);
+  });
+
+  // Fix wave 1, IMP 1: runCode used to read breaker state once up front, then
+  // write a state DERIVED FROM THAT STALE SNAPSHOT after the (awaited)
+  // network call — so two genuinely concurrent invocations (e.g. the MCP
+  // shim's shared singleton Cache under two parallel tool calls) could each
+  // independently compute "0 failures -> 1" from the same pre-call read and
+  // collapse two real failures into a recorded consecutiveFailures:1, never
+  // tripping the breaker. Both calls below are started back-to-back, neither
+  // awaited before the other starts, so their execution genuinely interleaves.
+  test('two concurrent failing calls are NOT collapsed into one recorded failure', async () => {
+    const cache = createCache(dir);
+    const now = () => Date.parse('2026-07-11T00:00:00.000Z');
+    const grepApp = throwingGrepApp(new EngineError('SOURCE_DOWN', 'grep.app is down (502)'));
+
+    const results = await Promise.allSettled([
+      runCode({ grepApp }, cache, baseOpts(), { now }),
+      runCode({ grepApp }, cache, baseOpts(), { now }),
+    ]);
+    expect(results.every((r) => r.status === 'rejected')).toBe(true);
+    expect(grepApp.calls).toHaveLength(2); // both genuinely reached the network
+
+    const breaker = cache.budget.load().grepApp;
+    expect(breaker?.consecutiveFailures).toBe(2); // NOT collapsed to 1
+    expect(breaker?.breakerState).toBe('open'); // 2 consecutive failures trips it
+  });
+
+  // Fix wave 1, IMP 1: without serialization, two concurrent calls arriving
+  // right as an open breaker's cooldown elapses could BOTH independently
+  // observe "open, cooldown elapsed" before either writes anything, both
+  // decide they're the half-open probe, and both hit the network — exactly
+  // the "single probe" contract this test proves holds under concurrency.
+  test('two concurrent calls racing a half-open window: only ONE actually probes the network', async () => {
+    const cache = createCache(dir);
+    cache.budget.updateGrepAppBreaker({
+      breakerState: 'open',
+      consecutiveFailures: 2,
+      retryAt: '2026-07-11T00:05:00.000Z',
+    });
+    const now = () => Date.parse('2026-07-11T00:05:00.000Z'); // cooldown just elapsed
+    const grepApp = throwingGrepApp(new EngineError('SOURCE_DOWN', 'grep.app is down (502)'));
+
+    const results = await Promise.allSettled([
+      runCode({ grepApp }, cache, baseOpts(), { now }),
+      runCode({ grepApp }, cache, baseOpts(), { now }),
+    ]);
+    expect(results.every((r) => r.status === 'rejected')).toBe(true);
+    // Exactly one call was ever the half-open probe; the loser, serialized
+    // behind it, observes the freshly-reopened breaker and never calls out.
+    expect(grepApp.calls).toHaveLength(1);
+
+    const breaker = cache.budget.load().grepApp;
+    expect(breaker?.breakerState).toBe('open');
+    expect(breaker?.consecutiveFailures).toBe(3); // 2 pre-existing + the one real probe failure
   });
 });
