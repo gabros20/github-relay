@@ -3,7 +3,9 @@
 // research, so a missing token is a LOUD AUTH_FAILED (design §2 Auth), not a
 // silent downgrade. The only credential is one free zero-permission
 // fine-grained PAT (non-expiring recommended — see doctor).
+import type { ChildProcessByStdio } from 'node:child_process';
 import { spawn } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { EngineError } from '../types.ts';
 
 /** Runs an argv and returns its stdout + exit code. Injected in tests. */
@@ -40,7 +42,18 @@ export function createNodeExec(opts: NodeExecOptions = {}): Exec {
         resolve({ stdout: '', exitCode: 1 });
         return;
       }
-      const proc = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let proc: ChildProcessByStdio<null, Readable, Readable>;
+      try {
+        // Node's spawn() never throws synchronously for a missing binary — it
+        // emits an async 'error' event, handled below. Bun's node:child_process
+        // shim measurably differs here (throws synchronously for ENOENT), so
+        // this try/catch is required to keep the "never rejects" contract
+        // consistent across both runtimes, not optional defensiveness.
+        proc = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch {
+        resolve({ stdout: '', exitCode: 1 });
+        return;
+      }
       let stdout = '';
       let stderr = '';
       proc.stdout.on('data', (d: Buffer) => {
