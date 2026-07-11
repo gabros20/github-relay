@@ -8,6 +8,7 @@ import { parseArgs } from '../../src/cli.ts';
 import {
   type DigestSources,
   digestOptsFromArgs,
+  renderTreeLines,
   runDigest,
   safeGunzip,
 } from '../../src/commands/digest.ts';
@@ -264,6 +265,35 @@ describe('runDigest — --max-tokens hard stop', () => {
     expect(result.dropped?.files).toBeGreaterThan(0);
     expect(result.dropped?.hint).toContain('--include');
   });
+
+  test('the tree listing itself participates in the budget — a 10k-file repo never writes materially more than the cap allows', async () => {
+    const cache = createCache(dir);
+    const manyFiles = Array.from({ length: 10_000 }, (_, i) => ({
+      path: `src/file${i}.ts`,
+      content: 'export {};',
+    }));
+    const { ghRest } = fakeSources({
+      downloadTarball: async (_owner, _repo, _ref, opts) => {
+        const bytes = buildFixtureTarGz(manyFiles);
+        writeFileSync(opts.out, bytes);
+        return { path: opts.out, bytes: bytes.length, headers: fakeHeaders() };
+      },
+    });
+    const cap = 20_000;
+    const result = await runDigest({ ghRest }, cache, {
+      repo: 'o/r',
+      include: [],
+      exclude: [],
+      maxTokens: String(cap),
+      out: join(dir, 'digest.md'), // the pre-truncation estimate is well over the inline threshold
+    });
+    // Before the fix, the unbounded tree section alone wrote ~236,952
+    // tokens under this exact 20k cap — 10x+ over. Now it must stay within
+    // a small, bounded overshoot (the trailing truncation note + closing
+    // fence, not proportional to file count).
+    expect(result.tokens).toBeLessThanOrEqual(cap * 1.05);
+    expect(result.dropped).toBeDefined();
+  });
 });
 
 describe('safeGunzip — decompression-bomb guard', () => {
@@ -297,6 +327,74 @@ describe('runDigest — decompression-bomb guard, end-to-end', () => {
     ).catch((e) => e)) as EngineError;
     expect(err).toBeInstanceOf(EngineError);
     expect(err.code).toBe('FETCH_FAILED');
+  });
+});
+
+describe('renderTreeLines — large trees never blow the spread-argument limit', () => {
+  // The old implementation built each directory's lines via
+  // `lines.push(...recursiveResult)` — a single spread call whose argument
+  // count equals that directory's total descendant-line count. On this
+  // runtime that reliably throws "Maximum call stack size exceeded" somewhere
+  // between 65k and 70k entries in one directory (verified directly against
+  // the pre-fix renderTree); 100k safely and deterministically crosses it.
+  test('100k files nested one level under a shared directory renders without throwing', () => {
+    const paths = Array.from({ length: 100_000 }, (_, i) => `dir/file${i}.ts`);
+    let lines: string[] = [];
+    expect(() => {
+      lines = renderTreeLines(paths);
+    }).not.toThrow();
+    // 1 line for `dir` + 100,000 file lines.
+    expect(lines).toHaveLength(100_001);
+    expect(lines[0]).toContain('dir');
+    expect(lines.some((l) => l.includes('file0.ts'))).toBe(true);
+    expect(lines.some((l) => l.includes('file99999.ts'))).toBe(true);
+  });
+
+  test('the 20k scale the brief calls out also renders without throwing', () => {
+    const paths = Array.from({ length: 20_000 }, (_, i) => `dir/file${i}.ts`);
+    expect(() => renderTreeLines(paths)).not.toThrow();
+  });
+
+  test('a small tree still renders the expected box-drawing shape', () => {
+    const lines = renderTreeLines(['README.md', 'src/index.ts']);
+    expect(lines).toEqual(['├── README.md', '└── src', '    └── index.ts']);
+  });
+});
+
+describe('runDigest — a 10k-file digest never blows the spread-argument limit', () => {
+  test('a large filtered file set renders end-to-end without throwing', async () => {
+    const cache = createCache(dir);
+    const manyFiles = Array.from({ length: 10_000 }, (_, i) => ({
+      path: `src/file${i}.ts`,
+      content: 'export {};',
+    }));
+    const { ghRest } = fakeSources({
+      downloadTarball: async (_owner, _repo, _ref, opts) => {
+        const bytes = buildFixtureTarGz(manyFiles);
+        writeFileSync(opts.out, bytes);
+        return { path: opts.out, bytes: bytes.length, headers: fakeHeaders() };
+      },
+    });
+    const outPath = join(dir, 'digest.md');
+    // A large-enough budget that everything legitimately fits — proves the
+    // fix produces a COMPLETE, correct digest at this scale, not just one
+    // that avoids crashing (a tiny/default cap would correctly drop
+    // everything here, which is a --max-tokens-budget question, not this
+    // test's concern — see the dedicated tree-budget tests instead).
+    let result: Awaited<ReturnType<typeof runDigest>> | undefined;
+    await expect(
+      (async () => {
+        result = await runDigest({ ghRest }, cache, {
+          repo: 'o/r',
+          include: [],
+          exclude: [],
+          out: outPath,
+          maxTokens: '400000',
+        });
+      })(),
+    ).resolves.toBeUndefined();
+    expect(result?.files).toBe(10_000);
+    expect(result?.dropped).toBeUndefined();
   });
 });
 

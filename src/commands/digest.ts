@@ -378,22 +378,32 @@ function buildTreeStructure(paths: string[]): TreeNode {
   return root;
 }
 
-function renderTree(node: TreeNode, prefix = ''): string[] {
+/**
+ * Renders into a shared accumulator rather than returning-and-spreading —
+ * `out.push(...recursiveResult)` blows JSC's call-stack/argument limit once
+ * a single directory's descendant-line count gets into the tens of
+ * thousands (a real 10k+-file repo). This still recurses once per
+ * directory LEVEL (bounded by tree depth, never by file count), so it
+ * scales linearly with total entries regardless of how wide any one
+ * directory is.
+ */
+function renderTreeInto(node: TreeNode, prefix: string, out: string[]): void {
   const names = Object.keys(node).sort();
-  const lines: string[] = [];
   names.forEach((name, i) => {
     const isLast = i === names.length - 1;
-    lines.push(`${prefix}${isLast ? '└── ' : '├── '}${name}`);
+    out.push(`${prefix}${isLast ? '└── ' : '├── '}${name}`);
     const child = node[name] as TreeNode;
     if (Object.keys(child).length > 0) {
-      lines.push(...renderTree(child, `${prefix}${isLast ? '    ' : '│   '}`));
+      renderTreeInto(child, `${prefix}${isLast ? '    ' : '│   '}`, out);
     }
   });
-  return lines;
 }
 
-function treeSection(paths: string[]): string {
-  return `# Tree\n\n\`\`\`\n${renderTree(buildTreeStructure(paths)).join('\n')}\n\`\`\`\n\n`;
+/** Exported for direct unit testing — the full rendered tree-listing lines, unbounded. */
+export function renderTreeLines(paths: string[]): string[] {
+  const lines: string[] = [];
+  renderTreeInto(buildTreeStructure(paths), '', lines);
+  return lines;
 }
 
 function fileSection(f: FileEntry): string {
@@ -409,6 +419,54 @@ function droppedHint(remaining: FileEntry[]): string {
     : `${remaining.length} files dropped past --max-tokens; narrow with --include or raise --max-tokens`;
 }
 
+interface BuiltSection {
+  text: string;
+  tokens: number;
+  /** True only when the LISTING itself had to stop short of every entry. */
+  truncated: boolean;
+}
+
+/**
+ * The tree section participates in the SAME `--max-tokens` budget as file
+ * sections — a 10k-file repo's tree listing alone can be tens of thousands
+ * of tokens, and rendering it in full regardless of the cap defeated the
+ * whole point of `--max-tokens` (a real repro: 236,952 tokens written under
+ * a 20k cap). Lines are added one at a time and the listing hard-stops
+ * before exceeding the budget, with a steering note naming how many entries
+ * were cut.
+ */
+function buildTreeSection(paths: string[], maxTokens: number): BuiltSection {
+  const lines = renderTreeLines(paths);
+  const header = '# Tree\n\n```\n';
+  let text = header;
+  let tokens = estimateTokens(header.length);
+  let shown = 0;
+  let truncated = false;
+
+  for (const line of lines) {
+    const lineText = `${line}\n`;
+    const lineTokens = estimateTokens(lineText.length);
+    if (tokens + lineTokens > maxTokens) {
+      truncated = true;
+      break;
+    }
+    text += lineText;
+    tokens += lineTokens;
+    shown += 1;
+  }
+
+  if (truncated) {
+    const note = `… tree truncated at ${shown} of ${lines.length} entries; use --include to narrow …\n`;
+    text += note;
+    tokens += estimateTokens(note.length);
+  }
+  const footer = '```\n\n';
+  text += footer;
+  tokens += estimateTokens(footer.length);
+
+  return { text, tokens, truncated };
+}
+
 interface BuiltMarkdown {
   markdown: string;
   includedCount: number;
@@ -416,10 +474,25 @@ interface BuiltMarkdown {
 }
 
 function buildMarkdown(filtered: FileEntry[], maxTokens: number): BuiltMarkdown {
-  let markdown = treeSection(filtered.map((f) => f.path));
-  let tokens = estimateTokens(markdown.length);
-  let includedCount = 0;
+  const tree = buildTreeSection(
+    filtered.map((f) => f.path),
+    maxTokens,
+  );
+  const markdown = tree.text;
+  let tokens = tree.tokens;
 
+  if (tree.truncated) {
+    // No budget left for any file section — every filtered file is dropped.
+    const estimatedTokens = filtered.reduce((sum, r) => sum + estimateTokens(r.size), 0);
+    return {
+      markdown,
+      includedCount: 0,
+      dropped: { files: filtered.length, estimatedTokens, hint: droppedHint(filtered) },
+    };
+  }
+
+  let body = markdown;
+  let includedCount = 0;
   for (let i = 0; i < filtered.length; i++) {
     const f = filtered[i] as FileEntry;
     const section = fileSection(f);
@@ -428,16 +501,16 @@ function buildMarkdown(filtered: FileEntry[], maxTokens: number): BuiltMarkdown 
       const remaining = filtered.slice(i);
       const estimatedTokens = remaining.reduce((sum, r) => sum + estimateTokens(r.size), 0);
       return {
-        markdown,
+        markdown: body,
         includedCount,
         dropped: { files: remaining.length, estimatedTokens, hint: droppedHint(remaining) },
       };
     }
-    markdown += section;
+    body += section;
     tokens += sectionTokens;
     includedCount += 1;
   }
-  return { markdown, includedCount };
+  return { markdown: body, includedCount };
 }
 
 // ── run ──────────────────────────────────────────────────────────────────
