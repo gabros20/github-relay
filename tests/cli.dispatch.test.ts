@@ -61,6 +61,66 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+describe('dispatch — plan (task 9)', () => {
+  test('a valid offline plan → ok:true, exit 0, zero network', async () => {
+    const { stdout, exitCode } = await run(
+      ['plan', 'topic:markdown', '--compact'],
+      fakeSources(),
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.command).toBe('plan');
+  });
+
+  test('no slices and no stdin → INVALID_INPUT, exit 1', async () => {
+    const { stdout, exitCode } = await run(
+      ['plan', '--compact'],
+      fakeSources(),
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+
+  test('plan reads slices from stdin via `-`', async () => {
+    const { stdout, exitCode } = await run(
+      ['plan', '-', '--compact'],
+      fakeSources(),
+      'topic:markdown\n',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+  });
+
+  test('--probe drives a real search call and spends a point', async () => {
+    const sources = fakeSources();
+    sources.ghGraphql = {
+      ...sources.ghGraphql,
+      graphql: async <T>() => ({ search: { repositoryCount: 5 } }) as T,
+    };
+    const { stdout, exitCode } = await run(
+      ['plan', 'topic:markdown', '--probe', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<{ pointsSpent: number }>;
+    expect(envelope.ok).toBe(true);
+    if (!envelope.ok) throw new Error('expected success');
+    expect(envelope.data.pointsSpent).toBe(1);
+  });
+});
+
 describe('dispatch — search', () => {
   test('a valid search → ok:true, exit 0', async () => {
     const { stdout, exitCode } = await run(

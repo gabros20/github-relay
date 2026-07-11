@@ -43,11 +43,12 @@ describe('run — unknown command', () => {
 });
 
 // search/batch/hydrate (task 4), enrich/rank (task 5), skim/read/digest
-// (task 6), and budget/doctor/cache (task 7) are wired — their own
-// envelope/exit-code contract is covered in tests/cli.dispatch.test.ts.
-// Every other registered command still falls through to the "not yet
-// implemented" path here.
+// (task 6), budget/doctor/cache (task 7), and plan (task 9) are wired —
+// their own envelope/exit-code contract is covered in
+// tests/cli.dispatch.test.ts. Every other registered command still falls
+// through to the "not yet implemented" path here.
 const WIRED_COMMANDS = new Set([
+  'plan',
   'search',
   'batch',
   'hydrate',

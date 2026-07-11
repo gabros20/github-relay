@@ -12,6 +12,7 @@ import { digestOptsFromArgs, runDigest } from './commands/digest.ts';
 import { doctorOptsFromArgs, runDoctor } from './commands/doctor.ts';
 import { enrichOptsFromArgs, runEnrich } from './commands/enrich.ts';
 import { hydrateOptsFromArgs, runHydrate } from './commands/hydrate.ts';
+import { planOptsFromArgs, runPlan } from './commands/plan.ts';
 import { rankOptsFromArgs, runRank } from './commands/rank.ts';
 import { readOptsFromArgs, runRead } from './commands/read.ts';
 import { commandNames } from './commands/registry.ts';
@@ -187,13 +188,14 @@ function helpText(): string {
 
 /**
  * Dispatch a parsed command against Sources. search/batch/hydrate (task 4),
- * enrich/rank (task 5), skim/read/digest (task 6), and budget/doctor/cache
- * (task 7) are wired to their runners, each wrapped in `guard()` so an
- * EngineError becomes a per-code envelope. Every other registered command
- * still falls through to a clear "not yet implemented" envelope (tasks
- * 8-13). A name outside the registry gets the same UNKNOWN_COMMAND code with
- * a different message, so the CLI's exit-code rule (`error.code ===
- * 'UNKNOWN_COMMAND' → exit 2`) covers both cases uniformly.
+ * enrich/rank (task 5), skim/read/digest (task 6), budget/doctor/cache
+ * (task 7), and plan (task 9) are wired to their runners, each wrapped in
+ * `guard()` so an EngineError becomes a per-code envelope. Every other
+ * registered command still falls through to a clear "not yet implemented"
+ * envelope (code/health — milestone B). A name outside the registry gets the
+ * same UNKNOWN_COMMAND code with a different message, so the CLI's exit-code
+ * rule (`error.code === 'UNKNOWN_COMMAND' → exit 2`) covers both cases
+ * uniformly.
  */
 export function dispatch(
   parsed: ParsedArgs,
@@ -213,6 +215,8 @@ export function dispatch(
     );
   }
   switch (command) {
+    case 'plan':
+      return guard('plan', () => runPlan(sources, cache, planOptsFromArgs(parsed), stdin));
     case 'search':
       return guard('search', () => runSearch(sources, cache, searchOptsFromArgs(parsed)));
     case 'batch':
