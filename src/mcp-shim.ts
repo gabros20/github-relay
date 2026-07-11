@@ -96,7 +96,14 @@ function pushRepeatable(argv: string[], name: string, values: unknown): void {
 }
 
 export function buildSearchArgv(args: ToolArgs): string[] {
-  const argv = ['search', String(args.query ?? '')];
+  // Flags first, then the standard "--" end-of-flags sentinel, then the
+  // free-text query verbatim — a query that itself starts with "--" (e.g.
+  // "--force push workflows") must never be misread as a flag attempt and
+  // silently dropped (fix wave 1, Important 2). "--" must come LAST in the
+  // argv (right before the positional it protects): parseArgs treats every
+  // token after the first "--" as positional, so any flag placed after it
+  // would stop being recognized as a flag too.
+  const argv = ['search'];
   pushFlag(argv, 'source', args.source);
   pushFlag(argv, 'limit', args.limit);
   pushRepeatable(argv, 'language', args.language);
@@ -106,6 +113,7 @@ export function buildSearchArgv(args: ToolArgs): string[] {
   pushFlag(argv, 'pushed', args.pushed);
   pushFlag(argv, 'sort', args.sort);
   pushFlag(argv, 'out', args.out);
+  argv.push('--', String(args.query ?? ''));
   return argv;
 }
 
@@ -135,40 +143,46 @@ export function buildEnrichArgv(args: ToolArgs): string[] {
 }
 
 export function buildRankArgv(args: ToolArgs): string[] {
-  const argv = ['rank', String(args.corpusPath ?? '')];
+  // Flags first, then "--", then the corpus path verbatim — see the note in
+  // buildSearchArgv on why "--" must be last (fix wave 1, Important 2).
+  const argv = ['rank'];
   pushFlag(argv, 'profile', args.profile);
   pushFlag(argv, 'weights', args.weights);
   pushFlag(argv, 'top', args.top);
   pushFlag(argv, 'min-score', args.minScore);
   pushFlag(argv, 'explain', args.explain);
   pushBool(argv, 'jsonl', args.jsonl);
+  argv.push('--', String(args.corpusPath ?? ''));
   return argv;
 }
 
 export function buildSkimArgv(args: ToolArgs): string[] {
-  const argv = ['skim', String(args.repo ?? '')];
+  const argv = ['skim'];
   pushFlag(argv, 'max-chars', args.maxChars);
   pushBool(argv, 'tree-only', args.treeOnly);
   pushFlag(argv, 'in', args.in);
+  argv.push('--', String(args.repo ?? ''));
   return argv;
 }
 
 export function buildReadArgv(args: ToolArgs): string[] {
   const paths = Array.isArray(args.paths) ? args.paths.map(String) : [];
-  const argv = ['read', String(args.repo ?? ''), ...paths];
+  const argv = ['read'];
   pushFlag(argv, 'ref', args.ref);
   pushFlag(argv, 'max-chars', args.maxChars);
+  argv.push('--', String(args.repo ?? ''), ...paths);
   return argv;
 }
 
 export function buildDigestArgv(args: ToolArgs): string[] {
-  const argv = ['digest', String(args.repo ?? '')];
+  const argv = ['digest'];
   pushFlag(argv, 'ref', args.ref);
   pushRepeatable(argv, 'include', args.include);
   pushRepeatable(argv, 'exclude', args.exclude);
   pushFlag(argv, 'max-tokens', args.maxTokens);
   pushFlag(argv, 'out', args.out);
   pushBool(argv, 'list', args.list);
+  argv.push('--', String(args.repo ?? ''));
   return argv;
 }
 
@@ -250,7 +264,15 @@ export const RANK_INPUT = {
   corpusPath: z.string().describe('REQUIRED — corpus.json to score (offline, zero network)'),
   profile: PROFILE_ENUM.optional(),
   weights: z.string().describe("override, e.g. 'A=25,B=20,C=15,...'").optional(),
-  top: z.number().int().nonnegative().optional(),
+  // Defaulted + capped over MCP (fix wave 1, Critical 1): a large corpus
+  // ranked with no --top would otherwise return EVERY row in one tool
+  // result (a 500-repo corpus was ~36,650 tokens, live-confirmed) — nothing
+  // like this exists on the CLI side, where an unbounded --top-less rank is
+  // a deliberate, explicit choice a human/script makes. The default (20)
+  // matches the registry's own `[--top 20]` usage hint; the CLI itself
+  // stays unbounded by default, since capping it would be a command-layer
+  // behavior change outside this task's scope.
+  top: z.number().int().nonnegative().max(100).default(20),
   minScore: z.number().optional(),
   explain: z
     .string()

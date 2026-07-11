@@ -1,9 +1,16 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { z } from 'zod';
+import { type CorpusRepo, saveCorpus } from '../src/cache/corpus.ts';
 import { createCache } from '../src/cache/index.ts';
+import { parseArgs } from '../src/cli.ts';
+import { searchOptsFromArgs } from '../src/commands/search.ts';
 import {
   BATCH_INPUT,
   DIGEST_INPUT,
+  RANK_INPUT,
   SEARCH_INPUT,
   buildBatchArgv,
   buildBudgetArgv,
@@ -60,12 +67,12 @@ describe('implementedCommands', () => {
 });
 
 describe('argv builders — search', () => {
-  test('builds query + out, omitting absent optional flags', () => {
+  test('flags come first, then "--", then the query verbatim', () => {
     const argv = buildSearchArgv({ query: 'markdown editor', out: 'corpus.json' });
-    expect(argv).toEqual(['search', 'markdown editor', '--out', 'corpus.json']);
+    expect(argv).toEqual(['search', '--out', 'corpus.json', '--', 'markdown editor']);
   });
 
-  test('folds repeatable language/topic flags and scalar filters in', () => {
+  test('folds repeatable language/topic flags and scalar filters in, all before "--"', () => {
     const argv = buildSearchArgv({
       query: 'editor',
       out: 'corpus.json',
@@ -80,7 +87,6 @@ describe('argv builders — search', () => {
     });
     expect(argv).toEqual([
       'search',
-      'editor',
       '--source',
       'rest',
       '--limit',
@@ -101,7 +107,16 @@ describe('argv builders — search', () => {
       'stars',
       '--out',
       'corpus.json',
+      '--',
+      'editor',
     ]);
+  });
+
+  test('a query that itself starts with "--" survives parseArgs intact (fix wave 1, Important 2)', () => {
+    const argv = buildSearchArgv({ query: '--force push workflows', out: 'corpus.json' });
+    const parsed = parseArgs(argv);
+    expect(parsed.command).toBe('search');
+    expect(searchOptsFromArgs(parsed).query).toBe('--force push workflows');
   });
 });
 
@@ -156,7 +171,7 @@ describe('argv builders — batch/hydrate/enrich', () => {
 });
 
 describe('argv builders — rank/skim/read', () => {
-  test('rank carries the corpus path positionally plus flags', () => {
+  test('rank carries flags first, then "--", then the corpus path', () => {
     const argv = buildRankArgv({
       corpusPath: 'corpus.json',
       profile: 'dissect',
@@ -167,7 +182,6 @@ describe('argv builders — rank/skim/read', () => {
     });
     expect(argv).toEqual([
       'rank',
-      'corpus.json',
       '--profile',
       'dissect',
       '--top',
@@ -177,30 +191,39 @@ describe('argv builders — rank/skim/read', () => {
       '--explain',
       'a/b',
       '--jsonl',
+      '--',
+      'corpus.json',
     ]);
   });
 
-  test('skim carries repo positionally plus flags', () => {
+  test('skim carries flags first, then "--", then repo', () => {
     const argv = buildSkimArgv({ repo: 'a/b', maxChars: 2000, treeOnly: true, in: 'corpus.json' });
     expect(argv).toEqual([
       'skim',
-      'a/b',
       '--max-chars',
       '2000',
       '--tree-only',
       '--in',
       'corpus.json',
+      '--',
+      'a/b',
     ]);
   });
 
-  test('read spreads paths after repo', () => {
+  test('read carries flags first, then "--", then repo + paths verbatim', () => {
     const argv = buildReadArgv({ repo: 'a/b', paths: ['README.md', 'src/index.ts'], ref: 'main' });
-    expect(argv).toEqual(['read', 'a/b', 'README.md', 'src/index.ts', '--ref', 'main']);
+    expect(argv).toEqual(['read', '--ref', 'main', '--', 'a/b', 'README.md', 'src/index.ts']);
+  });
+
+  test('a repo/path that itself starts with "--" survives parseArgs intact', () => {
+    const argv = buildReadArgv({ repo: 'a/b', paths: ['--weird-file.md'] });
+    const parsed = parseArgs(argv);
+    expect(parsed.positionals).toEqual(['a/b', '--weird-file.md']);
   });
 });
 
 describe('argv builders — digest/budget/doctor/cache', () => {
-  test('digest carries repeatable include/exclude and out', () => {
+  test('digest carries flags (incl. repeatable include/exclude and out) first, then "--", then repo', () => {
     const argv = buildDigestArgv({
       repo: 'a/b',
       ref: 'main',
@@ -212,7 +235,6 @@ describe('argv builders — digest/budget/doctor/cache', () => {
     });
     expect(argv).toEqual([
       'digest',
-      'a/b',
       '--ref',
       'main',
       '--include',
@@ -224,6 +246,8 @@ describe('argv builders — digest/budget/doctor/cache', () => {
       '--out',
       'digest.md',
       '--list',
+      '--',
+      'a/b',
     ]);
   });
 
@@ -275,6 +299,30 @@ describe('zod schemas — require-out enforcement', () => {
   });
 });
 
+describe('RANK_INPUT — top defaults + caps (fix wave 1, Critical 1)', () => {
+  test('an absent top defaults to 20 (matching the registry usage hint)', () => {
+    const parsed = z.object(RANK_INPUT).parse({ corpusPath: 'corpus.json' });
+    expect(parsed.top).toBe(20);
+  });
+
+  test('an explicit top under the cap is kept as-is', () => {
+    const parsed = z.object(RANK_INPUT).parse({ corpusPath: 'corpus.json', top: 5 });
+    expect(parsed.top).toBe(5);
+  });
+
+  test('an explicit top over 100 is rejected, not silently clamped', () => {
+    const result = z.object(RANK_INPUT).safeParse({ corpusPath: 'corpus.json', top: 500 });
+    expect(result.success).toBe(false);
+  });
+
+  test('the default flows through buildRankArgv into a real --top flag', () => {
+    const parsed = z.object(RANK_INPUT).parse({ corpusPath: 'corpus.json' });
+    const argv = buildRankArgv(parsed);
+    expect(argv).toContain('--top');
+    expect(argv[argv.indexOf('--top') + 1]).toBe('20');
+  });
+});
+
 describe('executeToolWith — envelope passthrough (no server, no network)', () => {
   test('a validation failure (INVALID_INPUT) is an ordinary isError:true text result', async () => {
     const result = await executeToolWith(fakeSources, cache, ['rank']);
@@ -301,5 +349,43 @@ describe('executeToolWith — envelope passthrough (no server, no network)', () 
   test('an unknown-in-registry style failure still returns isError, never throws', async () => {
     const result = await executeToolWith(fakeSources, cache, ['read', 'a/b']);
     expect(result.isError).toBe(true);
+  });
+});
+
+describe('rank over MCP does not flood the model (fix wave 1, Critical 1, live)', () => {
+  test('a 500-repo corpus, ranked with no explicit top, returns at most the default 20 rows', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ghrelay-mcp-rank-flood-'));
+    const corpusPath = join(dir, 'corpus.json');
+    const repos: CorpusRepo[] = Array.from({ length: 500 }, (_, i) => ({
+      full_name: `owner/repo-${i}`,
+      ghid: `R_${i}`,
+      aliases: [],
+      source: 'search',
+      signals: {},
+      stars: i,
+      description: 'a repo in the flood-test fixture',
+    }));
+    saveCorpus(corpusPath, {
+      schema: 'github-relay/corpus@1',
+      intent: 'flood test',
+      generatedAt: new Date(0).toISOString(),
+      queries: [],
+      count: repos.length,
+      repos,
+    });
+
+    const parsedInput = z.object(RANK_INPUT).parse({ corpusPath });
+    const argv = buildRankArgv(parsedInput);
+    const result = await executeToolWith(fakeSources, cache, argv);
+    expect(result.isError).toBe(false);
+    const first = result.content[0];
+    expect(first).toBeDefined();
+    const envelope = JSON.parse(first?.text ?? '{}') as {
+      ok: boolean;
+      data: { count: number; rows?: unknown[] };
+    };
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.rows?.length).toBeLessThanOrEqual(20);
+    expect(envelope.data.count).toBeLessThanOrEqual(20);
   });
 });
