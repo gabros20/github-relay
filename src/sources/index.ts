@@ -11,6 +11,7 @@ import { type Ecosystems, createEcosystems } from './ecosystems.ts';
 import { type GhGraphql, createGhGraphql } from './gh-graphql.ts';
 import { type CreateSink, type GhRest, createGhRest } from './gh-rest.ts';
 import { type GrepApp, createGrepApp } from './grep-app.ts';
+import { type OssInsight, createOssInsight } from './ossinsight.ts';
 import type { Seams } from './seams.ts';
 import { withSeamDefaults } from './seams.ts';
 
@@ -21,6 +22,7 @@ export interface Sources {
   depsdev: DepsDev;
   grepApp: GrepApp;
   clickhouse: ClickhousePlay;
+  ossinsight: OssInsight;
 }
 
 export interface CreateSourcesOptions extends Partial<Seams> {
@@ -48,6 +50,7 @@ export function createSources(opts: CreateSourcesOptions = {}): Sources {
   let depsdev: DepsDev | undefined;
   let grepApp: GrepApp | undefined;
   let clickhouse: ClickhousePlay | undefined;
+  let ossinsight: OssInsight | undefined;
 
   return {
     get ghGraphql(): GhGraphql {
@@ -73,6 +76,10 @@ export function createSources(opts: CreateSourcesOptions = {}): Sources {
     get clickhouse(): ClickhousePlay {
       clickhouse ??= createClickhousePlay(seams);
       return clickhouse;
+    },
+    get ossinsight(): OssInsight {
+      ossinsight ??= createOssInsight(seams);
+      return ossinsight;
     },
   };
 }
