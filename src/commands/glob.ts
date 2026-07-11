@@ -6,22 +6,32 @@
 
 function globToRegExp(glob: string): RegExp {
   let pattern = '';
-  for (let i = 0; i < glob.length; i++) {
+  let i = 0;
+  while (i < glob.length) {
     const c = glob[i];
-    if (c === '*') {
-      if (glob[i + 1] === '*') {
-        // `**` — optionally eat a following slash so `src/**/*.ts` matches `src/x.ts` too.
-        pattern += '.*';
-        i += 1;
-        if (glob[i + 1] === '/') i += 1;
+    if (c === '*' && glob[i + 1] === '*') {
+      if (glob[i + 2] === '/') {
+        // `**/` — zero or more whole path segments, so `**/node_modules/**`
+        // matches both `node_modules/x` and `a/b/node_modules/x`, but never
+        // a false-positive substring match like `xnode_modules/x` (the
+        // group must end on an actual `/` boundary, not any character run).
+        pattern += '(?:.*/)?';
+        i += 3;
       } else {
-        pattern += '[^/]*';
+        // A trailing/bare `**` — anything, including further `/` segments.
+        pattern += '.*';
+        i += 2;
       }
+      continue;
+    }
+    if (c === '*') {
+      pattern += '[^/]*';
     } else if (c === '?') {
       pattern += '[^/]';
     } else {
       pattern += c?.replace(/[.+^${}()|[\]\\]/g, '\\$&');
     }
+    i += 1;
   }
   return new RegExp(`^${pattern}$`);
 }

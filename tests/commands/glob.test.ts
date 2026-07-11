@@ -33,4 +33,10 @@ describe('globMatch', () => {
     expect(globMatch('a.b', 'aXb')).toBe(false);
     expect(globMatch('a.b', 'a.b')).toBe(true);
   });
+
+  test('**/ requires an actual path-segment boundary, never a bare substring match', () => {
+    expect(globMatch('**/node_modules/**', 'node_modules/x')).toBe(true);
+    expect(globMatch('**/node_modules/**', 'a/b/node_modules/x')).toBe(true);
+    expect(globMatch('**/node_modules/**', 'xnode_modules/x')).toBe(false);
+  });
 });

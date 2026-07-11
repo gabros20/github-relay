@@ -208,14 +208,19 @@ describe('runRead — no cached tree', () => {
     const cache = createCache(dir);
     const { ghRest } = fakeGhRest({
       '/repos/o/r/commits/HEAD': () => ({ status: 200, body: { sha: SHA }, etag: '"c1"' }),
+      // GitHub's real contents endpoint returns a bare ARRAY of entries for a
+      // directory, not an object with type:'dir'.
       [`/repos/o/r/contents/src?ref=${SHA}`]: () => ({
         status: 200,
-        body: [{ type: 'dir' }],
+        body: [{ name: 'index.ts', type: 'file' }],
       }),
     });
-    await expect(
-      runRead({ ghRest }, cache, { repo: 'o/r', paths: ['src'] }),
-    ).rejects.toBeInstanceOf(EngineError);
+    const err = (await runRead({ ghRest }, cache, { repo: 'o/r', paths: ['src'] }).catch(
+      (e) => e,
+    )) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    expect(err.code).toBe('INVALID_INPUT');
+    expect(err.message).toContain('directory');
   });
 });
 

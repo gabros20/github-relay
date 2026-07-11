@@ -193,6 +193,12 @@ async function readViaContentsApi(
     throw e;
   }
   updateBudgetFromRestHeaders(cache, 'restCore', res.headers);
+  // GitHub's contents endpoint returns a bare ARRAY (of entries) for a
+  // directory path, not an object with a `type` field — checked explicitly
+  // rather than relying on `.type`/`.sha` being incidentally undefined.
+  if (Array.isArray(res.body)) {
+    throw new EngineError('INVALID_INPUT', `'${path}' is a directory, not a readable file`);
+  }
   const body = res.body as ContentsBody;
   if (body.type !== undefined && body.type !== 'file') {
     throw new EngineError('INVALID_INPUT', `'${path}' is a ${body.type}, not a readable file`);
