@@ -109,19 +109,26 @@ ghrelay plan <slices...> [--dry] [--probe] [--shard stars|created] [--max-probes
   (one query per line, `#` header) — feed it straight into `batch --file queries.txt --out
   corpus.json`.
 
-### `search` — cheap, 1 GraphQL point per 100 results. The wide net.
+### `search` — cheap, 1 GraphQL point per 100 results (1 OSS Insight GET for trending). The wide net.
 ```
-ghrelay search <query> [--source gh|rest|trending] [--limit 30]
+ghrelay search <query> [--source gh|rest|trending] [--period 24h|week|month] [--limit 30]
        [--language X --topic Y --stars A..B --created R --pushed R --sort stars|updated]
        [--fields a,b,c] [--out corpus.json]
 ```
 - One `search(type:REPOSITORY, first:100)` page (or `--source rest` fallback), pre-enriched —
   stars, forks, pushedAt, createdAt, license, topics, language, archived, description — zero
-  extra calls. `--source trending` (OSS Insight) is roadmap (v0.1 milestone B).
+  extra calls.
+- `--source trending`: OSS Insight's currently-trending repos (`--period`, default `week`;
+  `--language` accepts at most one, since OSS Insight filters by a single language). No free-text
+  query or GH qualifier flags (`--topic`/`--stars`/`--created`/`--pushed`/`--sort`) apply here —
+  those are `INVALID_INPUT` for this source; use `--source gh` for query-shaped search. Rows tag
+  `source:"trending"` with no GraphQL node id yet (same as `code`'s hits) — `hydrate` them for a
+  real `ghid`. Counts against the `ossinsight` pool (600/hr/IP), visible in `budget`.
 - Without `--out`: prints compact rows (or `--fields` projects just those columns). With
   `--out`: merges into the corpus (fresh-wins) and returns a `{count, merged, out}` summary
   instead — **over MCP, `out` is REQUIRED**, so a big result page never transits the model.
-- `RESULT_CAP` (>1,000 results) carries a ready-made `stars:`/`created:` shard-split hint.
+- `RESULT_CAP` (>1,000 results) carries a ready-made `stars:`/`created:` shard-split hint
+  (`--source gh`/`rest` only — trending has no result-count cap to hit).
 
 ### `batch` — N points, strictly serialized. Many shards → one deduped corpus.
 ```

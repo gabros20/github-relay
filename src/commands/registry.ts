@@ -25,11 +25,12 @@ export const COMMANDS: CommandDef[] = [
   },
   {
     name: 'search',
-    cost: 'cheap — 1 GraphQL point per 100 results',
+    cost: 'cheap — 1 GraphQL point per 100 results (or 1 OSS Insight GET for --source trending)',
     summary: 'The wide discovery net — pre-enriched repo search. Rank on this before enrich.',
     usage:
-      'ghrelay search <query> [--source gh|rest|trending] [--limit 30] [--language X --topic Y ' +
-      '--stars A..B --created R --pushed R --sort stars|updated] [--fields ...] [--out corpus.json]',
+      'ghrelay search <query> [--source gh|rest|trending] [--period 24h|week|month] [--limit 30] ' +
+      '[--language X --topic Y --stars A..B --created R --pushed R --sort stars|updated] ' +
+      '[--fields ...] [--out corpus.json]',
   },
   {
     name: 'batch',
