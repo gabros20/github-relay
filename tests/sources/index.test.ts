@@ -19,6 +19,7 @@ describe('createSources — shape + injected seams', () => {
     expect(typeof sources.ghRest.get).toBe('function');
     expect(typeof sources.ecosystems.repo).toBe('function');
     expect(typeof sources.depsdev.project).toBe('function');
+    expect(typeof sources.grepApp.search).toBe('function');
   });
 
   test('the injected fetchImpl is the one the adapters actually use', async () => {
@@ -54,5 +55,6 @@ describe('createSources — lazy, memoized token', () => {
     const sources = createSources({ fetchImpl, env: { GH_TOKEN: 't' } });
     expect(sources.ghGraphql).toBe(sources.ghGraphql);
     expect(sources.ghRest).toBe(sources.ghRest);
+    expect(sources.grepApp).toBe(sources.grepApp);
   });
 });

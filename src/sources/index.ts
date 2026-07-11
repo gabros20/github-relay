@@ -9,6 +9,7 @@ import { type DepsDev, createDepsDev } from './depsdev.ts';
 import { type Ecosystems, createEcosystems } from './ecosystems.ts';
 import { type GhGraphql, createGhGraphql } from './gh-graphql.ts';
 import { type CreateSink, type GhRest, createGhRest } from './gh-rest.ts';
+import { type GrepApp, createGrepApp } from './grep-app.ts';
 import type { Seams } from './seams.ts';
 import { withSeamDefaults } from './seams.ts';
 
@@ -17,6 +18,7 @@ export interface Sources {
   ghRest: GhRest;
   ecosystems: Ecosystems;
   depsdev: DepsDev;
+  grepApp: GrepApp;
 }
 
 export interface CreateSourcesOptions extends Partial<Seams> {
@@ -42,6 +44,7 @@ export function createSources(opts: CreateSourcesOptions = {}): Sources {
   let ghRest: GhRest | undefined;
   let ecosystems: Ecosystems | undefined;
   let depsdev: DepsDev | undefined;
+  let grepApp: GrepApp | undefined;
 
   return {
     get ghGraphql(): GhGraphql {
@@ -59,6 +62,10 @@ export function createSources(opts: CreateSourcesOptions = {}): Sources {
     get depsdev(): DepsDev {
       depsdev ??= createDepsDev(seams);
       return depsdev;
+    },
+    get grepApp(): GrepApp {
+      grepApp ??= createGrepApp(seams);
+      return grepApp;
     },
   };
 }
