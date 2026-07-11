@@ -19,25 +19,45 @@ export interface BudgetSources {
   ghRest: Pick<GhRest, 'get'>;
 }
 
-type ForecastPool = 'graphqlPoints' | 'restCore';
+type ForecastPool = 'graphqlPoints' | 'restCore' | 'ossinsight';
+const FORECAST_POOLS: readonly ForecastPool[] = ['graphqlPoints', 'restCore', 'ossinsight'];
 
 /**
  * Marginal cost per unit ("one run of this command"), design §4 table — as
- * documented in the task-7 brief. Each command maps to per-pool per-unit costs;
- * most touch a single pool, but `health` (task 11) spends across BOTH GraphQL
- * and REST core in one run, so the model is a per-pool map rather than a single
- * pool. ClickHouse's one POST isn't a forecastable GitHub pool, so it's omitted
- * from the affordability math (design §4: it's a no-SLA goodwill service, never
- * a binding quota constraint).
+ * documented in the task-7 brief (task 12 completed coverage to every
+ * registered command, task 11's health entry verified unchanged). Each
+ * command maps to per-pool per-unit costs; most touch a single pool, but
+ * `health` spends across BOTH GraphQL and REST core in one run, so the model
+ * is a per-pool map rather than a single pool. ClickHouse's one POST isn't a
+ * forecastable pool (no rate-limit headers exist for it) and grep.app has no
+ * numeric quota at all (a breaker, not a rate window) — both stay outside the
+ * affordability math (design §4: no-SLA goodwill services, never binding
+ * quota constraints). A command with an empty `{}` entry is explicitly FREE
+ * — accepted by `--forecast` and simply contributing zero spend, never
+ * INVALID_INPUT — so every one of the 14 registered commands is covered.
+ * `trending` is `search --source trending`'s own entry (not a registry
+ * command in its own right) since it spends a materially different pool
+ * (ossinsight) than plain `search` (graphqlPoints) — letting a caller
+ * forecast the two lanes separately.
  */
-const FORECAST_COST_MODEL: Record<string, Partial<Record<ForecastPool, number>>> = {
-  search: { graphqlPoints: 1 }, // 1pt/page
+export const FORECAST_COST_MODEL: Record<string, Partial<Record<ForecastPool, number>>> = {
+  plan: {}, // free by default; --probe's point spend is variable and its own --max-probes-capped budget, not a fixed per-unit cost
+  search: { graphqlPoints: 1 }, // 1pt/page (the default GraphQL lane)
+  trending: { ossinsight: 1 }, // search --source trending: 1 OSS Insight GET per call
+  batch: { graphqlPoints: 1 }, // one search-shaped GraphQL call per query line
+  hydrate: { graphqlPoints: 1 }, // ~1pt per <=50-id aliased batch
+  code: {}, // free — grep.app has no forecastable quota pool (breaker state, not a rate window)
   enrich: { graphqlPoints: 2 }, // ~2pt per <=50-repo batch; third-party leg is zero GH quota
-  skim: { restCore: 2 }, // 2 REST core calls
-  digest: { restCore: 1 }, // 1 tarball request
+  rank: {}, // free — offline, zero network
   // GATE-3 forensics on a ~10-id finalist batch (design §4 table): 1 probe +
   // 1 heavy batch ≈ 2 GraphQL pts, ~10 /contributors = 10 REST core, 1 CH POST.
   health: { graphqlPoints: 2, restCore: 10 },
+  skim: { restCore: 2 }, // 2 REST core calls
+  read: { restCore: 1 }, // lower bound: 1 REST call per uncached file — actual cost scales with path count/cache hits
+  digest: { restCore: 1 }, // 1 tarball request
+  budget: {}, // free — its own /rate_limit refresh is explicitly quota-exempt
+  doctor: {}, // free
+  cache: {}, // free, local
 };
 
 export interface ForecastPoolProjection {
@@ -137,11 +157,11 @@ function parseForecastSpec(raw: string): ForecastEntry[] {
 
 function computeForecast(raw: string, pools: Budget): ForecastResult {
   const entries = parseForecastSpec(raw);
-  const spend: Record<ForecastPool, number> = { graphqlPoints: 0, restCore: 0 };
+  const spend: Record<ForecastPool, number> = { graphqlPoints: 0, restCore: 0, ossinsight: 0 };
   for (const { command, count } of entries) {
     const model = FORECAST_COST_MODEL[command];
     if (!model) continue;
-    for (const pool of ['graphqlPoints', 'restCore'] as const) {
+    for (const pool of FORECAST_POOLS) {
       const perUnit = model[pool];
       if (perUnit) spend[pool] += perUnit * count;
     }
@@ -149,7 +169,7 @@ function computeForecast(raw: string, pools: Budget): ForecastResult {
 
   let affordable = true;
   const projected: ForecastResult['pools'] = {};
-  for (const pool of ['graphqlPoints', 'restCore'] as const) {
+  for (const pool of FORECAST_POOLS) {
     if (spend[pool] === 0) continue;
     const remaining = pools[pool]?.remaining ?? null;
     if (remaining === null) {

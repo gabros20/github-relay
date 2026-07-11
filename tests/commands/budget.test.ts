@@ -138,13 +138,12 @@ describe('runBudget — --forecast', () => {
     expect(result.forecast?.pools.graphqlPoints).toEqual({ remaining: null, projected: null });
   });
 
-  test('an unknown command in --forecast is INVALID_INPUT', async () => {
+  test('a genuinely unknown command in --forecast is INVALID_INPUT', async () => {
     const cache = createCache(dir);
     const ghRest = fakeGhRest(rateLimitBody());
-    // `rank`/`cache` are free/offline — they have no forecastable pool cost.
-    await expect(runBudget({ ghRest }, cache, { forecast: 'rank:2' })).rejects.toMatchObject({
-      code: 'INVALID_INPUT',
-    });
+    await expect(runBudget({ ghRest }, cache, { forecast: 'nonexistent:2' })).rejects.toMatchObject(
+      { code: 'INVALID_INPUT' },
+    );
   });
 
   test('health forecasts across BOTH pools in one run (task 11: 2 GraphQL + 10 REST core per unit)', async () => {
@@ -179,5 +178,66 @@ describe('runBudget — --forecast', () => {
     await expect(runBudget({ ghRest }, cache, { forecast: 'skim:1.5' })).rejects.toMatchObject({
       code: 'INVALID_INPUT',
     });
+  });
+});
+
+describe('runBudget — --forecast completeness (task 12: every registered command)', () => {
+  test('every one of the 14 registered commands is accepted by --forecast, never INVALID_INPUT', async () => {
+    const cache = createCache(dir);
+    const ghRest = fakeGhRest(rateLimitBody());
+    const registered = [
+      'plan',
+      'search',
+      'batch',
+      'hydrate',
+      'code',
+      'enrich',
+      'rank',
+      'health',
+      'skim',
+      'read',
+      'digest',
+      'budget',
+      'doctor',
+      'cache',
+    ];
+    expect(registered).toHaveLength(14);
+    const spec = registered.map((c) => `${c}:1`).join(',');
+    const result = await runBudget({ ghRest }, cache, { forecast: spec });
+    expect(result.forecast).toBeDefined();
+  });
+
+  test('an explicitly-free command (rank, cache, code, doctor, budget, plan) is accepted and spends nothing', async () => {
+    const cache = createCache(dir);
+    const ghRest = fakeGhRest(
+      rateLimitBody({
+        core: { limit: 5000, remaining: 100, reset: 2000000000 },
+        graphql: { limit: 5000, remaining: 100, reset: 2000000000 },
+      }),
+    );
+    const result = await runBudget({ ghRest }, cache, {
+      forecast: 'rank:1000,cache:1000,code:1000,doctor:1000,budget:1000,plan:1000',
+    });
+    expect(result.forecast?.pools).toEqual({});
+    expect(result.forecast?.affordable).toBe(true);
+  });
+
+  test('`trending` (search --source trending) forecasts the ossinsight pool, distinct from plain `search`', async () => {
+    const cache = createCache(dir);
+    const ghRest = fakeGhRest(rateLimitBody());
+    cache.budget.updatePool('ossinsight', { remaining: 50, resetAt: '2026-07-11T14:00:00.000Z' });
+    const result = await runBudget({ ghRest }, cache, { forecast: 'trending:10' });
+    expect(result.forecast?.pools.ossinsight).toEqual({ remaining: 50, projected: 40 });
+    expect(result.forecast?.pools.graphqlPoints).toBeUndefined();
+    expect(result.forecast?.affordable).toBe(true);
+  });
+
+  test('trending affordable:false when the ossinsight pool would go negative', async () => {
+    const cache = createCache(dir);
+    const ghRest = fakeGhRest(rateLimitBody());
+    cache.budget.updatePool('ossinsight', { remaining: 5, resetAt: '2026-07-11T14:00:00.000Z' });
+    const result = await runBudget({ ghRest }, cache, { forecast: 'trending:10' });
+    expect(result.forecast?.affordable).toBe(false);
+    expect(result.forecast?.pools.ossinsight).toEqual({ remaining: 5, projected: -5 });
   });
 });

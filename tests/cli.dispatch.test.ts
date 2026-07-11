@@ -530,7 +530,7 @@ describe('dispatch — budget (task 7)', () => {
     const sources = fakeSources();
     sources.ghRest = fakeGhRestForExtraction();
     const { stdout, exitCode } = await run(
-      ['budget', '--forecast', 'rank:1', '--compact'],
+      ['budget', '--forecast', 'nonexistent:1', '--compact'],
       sources,
       '',
       createCache(dir),
