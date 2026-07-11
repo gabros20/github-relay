@@ -125,6 +125,7 @@ export function buildSearchArgv(args: ToolArgs): string[] {
   // would stop being recognized as a flag too.
   const argv = ['search'];
   pushFlag(argv, 'source', args.source);
+  pushFlag(argv, 'period', args.period);
   pushFlag(argv, 'limit', args.limit);
   pushRepeatable(argv, 'language', args.language);
   pushRepeatable(argv, 'topic', args.topic);
@@ -251,6 +252,7 @@ export function buildCacheArgv(args: ToolArgs): string[] {
 // ── zod input schemas (exported for require-out enforcement tests) ────────
 
 const SOURCE_ENUM = z.enum(['gh', 'rest', 'trending']);
+const PERIOD_ENUM = z.enum(['24h', 'week', 'month']);
 const SORT_ENUM = z.enum(['stars', 'updated']);
 const PROFILE_ENUM = z.enum(['build-on', 'dissect', 'ideas']);
 const CACHE_SUBCOMMAND_ENUM = z.enum(['stats', 'clear', 'gc']);
@@ -293,8 +295,11 @@ export const SEARCH_INPUT = {
     .string()
     .describe('free-text query; language/topic/stars/created/pushed become qualifiers folded in'),
   source: SOURCE_ENUM.optional(),
+  period: PERIOD_ENUM.describe(
+    "--source trending only: trending window (default 'week')",
+  ).optional(),
   limit: z.number().int().positive().max(100).optional(),
-  language: z.array(z.string()).optional(),
+  language: z.array(z.string()).describe('--source trending accepts at most one').optional(),
   topic: z.array(z.string()).optional(),
   stars: z.string().describe("range, e.g. '>100', '10..500', '50..*'").optional(),
   created: z.string().describe("ISO date/range, e.g. '>2024-01-01'").optional(),

@@ -159,6 +159,26 @@ describe('argv builders — search', () => {
     expect(parsed.command).toBe('search');
     expect(searchOptsFromArgs(parsed).query).toBe('--force push workflows');
   });
+
+  test('--source trending + --period fold in before "--", like every other scalar flag', () => {
+    const argv = buildSearchArgv({
+      query: '',
+      out: 'corpus.json',
+      source: 'trending',
+      period: '24h',
+    });
+    expect(argv).toEqual([
+      'search',
+      '--source',
+      'trending',
+      '--period',
+      '24h',
+      '--out',
+      'corpus.json',
+      '--',
+      '',
+    ]);
+  });
 });
 
 describe('argv builders — code', () => {
@@ -424,6 +444,18 @@ describe('zod schemas — require-out enforcement', () => {
     const schema = z.object(SEARCH_INPUT);
     expect(schema.safeParse({ query: 'x' }).success).toBe(false);
     expect(schema.safeParse({ query: 'x', out: 'corpus.json' }).success).toBe(true);
+  });
+
+  test('search accepts a valid --period, rejects an unknown one', () => {
+    const schema = z.object(SEARCH_INPUT);
+    expect(
+      schema.safeParse({ query: '', out: 'corpus.json', source: 'trending', period: '24h' })
+        .success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({ query: '', out: 'corpus.json', source: 'trending', period: 'yesterday' })
+        .success,
+    ).toBe(false);
   });
 
   test('batch rejects a missing out, accepts a present one', () => {
