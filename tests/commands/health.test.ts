@@ -167,6 +167,20 @@ describe('deriveVelocity', () => {
   test('no WatchEvent rows → null (F stays partial, never a fabricated histogram)', () => {
     expect(deriveVelocity([], null)).toBeNull();
   });
+
+  test('a negative ClickHouse cnt is clamped to 0 before it feeds burstiness — never yields a share > 1', () => {
+    const v = deriveVelocity(
+      rows([
+        // A malformed/adversarial negative count for one month.
+        { month: '2019-01-01', event_type: 'WatchEvent', stars: -50 },
+        { month: '2020-06-01', event_type: 'WatchEvent', stars: 500 },
+      ]),
+      null,
+    );
+    expect(v?.burstiness).toBeLessThanOrEqual(1);
+    expect(v?.burstiness).toBeCloseTo(1, 5); // the negative month clamps to 0
+    expect(v?.lifetimeStars).toBe(500);
+  });
 });
 
 describe('readStarredAtSample — three degradation shapes (CRITICAL hardening note)', () => {
@@ -406,6 +420,26 @@ describe('runHealth — end-to-end coverage completion', () => {
     expect(one?.signals.openIssues90d?.source).toBe('health');
     expect(one?.signals.closedIssues90d?.value).toBe(15);
     expect(one?.signals.openIssues).toBeUndefined(); // enrich's lifetime keys untouched
+  });
+
+  test("counts the starredAt probe's own GraphQL point in pointsSpent and the budget pool, not just the heavy fragment's", async () => {
+    const names = ['o/one'];
+    const path = writeCorpus(
+      dir,
+      names.map((n) => enrichedRepo(n)),
+    );
+    const cache = createCache(dir);
+    const handle = fakeSources({
+      probe: 'available',
+      heavy: { 'o/one': heavyNode('o/one') },
+    });
+    const result = await runHealth(handle.sources, cache, { in: path, ids: names }, { now: NOW });
+    // fakeSources' lastRateLimit() reports cost:1 on every call — one point
+    // for the standalone starredAt probe, one for the (single-chunk) heavy
+    // fragment; pointsSpent must reflect both, and the budget pool must have
+    // been updated (not just overwritten silently) by the probe's own call.
+    expect(result.pointsSpent).toBe(2);
+    expect(cache.budget.load().graphqlPoints?.remaining).toBe(4999);
   });
 });
 

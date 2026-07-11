@@ -184,10 +184,13 @@ export interface RepoVelocity {
   burstForkGrowth: boolean;
 }
 
+/** Clamps a raw ClickHouse `cnt` to >=0 before it ever feeds burstiness/velocity math — a
+ * malformed/adversarial response carrying a negative count must never invert a share
+ * (peak/lifetime > 1) or corrupt the histogram. */
 function monthCounts(rows: ClickhouseEventRow[], eventType: string): Map<string, number> {
   const m = new Map<string, number>();
   for (const r of rows) {
-    if (r.event_type === eventType) m.set(r.month, (m.get(r.month) ?? 0) + r.stars);
+    if (r.event_type === eventType) m.set(r.month, (m.get(r.month) ?? 0) + Math.max(0, r.stars));
   }
   return m;
 }
@@ -443,6 +446,12 @@ function assembleSignals(args: {
     put(signals, 'burstForkGrowth', velocity.burstForkGrowth, CH, fetchedAt);
   } else {
     // ClickHouse down, or no rows for this repo → F stays on ratio checks only.
+    // WATCH-ITEM: this `fCoverage:'partial'` signal is written like any other
+    // — it persists in the corpus (through re-enrich/re-rank) until the NEXT
+    // successful `health` run overwrites it with fresh velocity data. A
+    // transient ClickHouse outage during one run can leave a repo looking
+    // permanently F-degraded until someone re-runs health, not just for that
+    // one invocation.
     fCoverage = 'partial';
   }
   if (fCoverage) put(signals, 'fCoverage', fCoverage, CH, fetchedAt);
@@ -629,8 +638,15 @@ export async function runHealth(
 
   const names = targets.map((r) => r.full_name);
 
-  // 1) re-probe the contested starredAt feature ONCE (design §12 risk 1).
+  // 1) re-probe the contested starredAt feature ONCE (design §12 risk 1). This
+  // spends a real GraphQL point (the probe query itself), so its cost is
+  // persisted into the budget pool and folded into pointsSpent here — before
+  // the heavy stage's own updateBudgetFromGraphql call overwrites lastRateLimit()
+  // with its own (separate) cost, which would otherwise make the probe's spend
+  // invisible to the budget the agent tracks.
   const probe = await probeStarredAt(sources.ghGraphql);
+  updateBudgetFromGraphql(cache, sources.ghGraphql);
+  const probePoints = sources.ghGraphql.lastRateLimit()?.cost ?? 0;
   const starredAtProbe =
     probe === 'available' ? 'available' : probe === 'restricted' ? 'restricted' : 'skipped';
 
@@ -704,7 +720,7 @@ export async function runHealth(
     failed: [...selectFailed, ...heavy.failed],
     clickhouse: clickhouse.ok ? 'ok' : 'partial',
     starredAtProbe,
-    pointsSpent: heavy.pointsSpent,
+    pointsSpent: probePoints + heavy.pointsSpent,
     repos,
     out: path,
   };
