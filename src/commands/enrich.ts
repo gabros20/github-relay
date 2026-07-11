@@ -383,7 +383,7 @@ interface GraphqlStage {
   pointsSpent: number;
 }
 
-/** Fetch the light fragment for `targets` in serialized 25-batches (or the learned 'light' ceiling, if lower), summing observed GraphQL cost. */
+/** Fetch the light fragment for `targets` in serialized 25-batches (or the learned 'enrich-light' ceiling, if lower and fresh), summing observed GraphQL cost. */
 async function runGraphqlStage(
   sources: EnrichSources,
   cache: Cache,
@@ -397,8 +397,8 @@ async function runGraphqlStage(
   const failed: EnrichFailure[] = [];
   let pointsSpent = 0;
 
-  const batchSize = startingBatchSize(cache, 'light', GRAPHQL_BATCH);
-  const onEffectiveSize = learnedCeilingRecorder(cache, 'light', batchSize);
+  const batchSize = startingBatchSize(cache, 'enrich-light', GRAPHQL_BATCH);
+  const onEffectiveSize = learnedCeilingRecorder(cache, 'enrich-light', batchSize);
 
   for (let i = 0; i < targets.length; i += GRAPHQL_BATCH) {
     const chunk = targets.slice(i, i + GRAPHQL_BATCH).map((r) => r.full_name);

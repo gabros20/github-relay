@@ -430,19 +430,22 @@ describe('enrich — per-repo GraphQL failure isolation', () => {
   });
 });
 
-describe('enrich — learned GraphQL batch ceilings (task 12)', () => {
-  test('a bisected effective size below the requested batch persists a tighter light ceiling', async () => {
+describe('enrich — learned GraphQL batch ceilings (task 12, fix wave 2: per-fragment classes)', () => {
+  test('a bisected effective size below the requested batch persists a tighter enrich-light ceiling', async () => {
     const path = writeCorpus([bareRepo('acme/a'), bareRepo('acme/b')]);
     const { sources } = fakeSources({ effectiveSize: 12 }); // below enrich's static default of 25
     const cache = createCache(dir);
     await runEnrich(sources, cache, { in: path, ids: [] }, { now: NOW });
-    expect(cache.budget.load().learnedCeilings.light).toBe(12);
+    expect(cache.budget.load().learnedCeilings['enrich-light']).toMatchObject({ size: 12 });
   });
 
   test('a subsequent enrich starts from the learned ceiling instead of the static 25 default', async () => {
     const path = writeCorpus([bareRepo('acme/a')]);
     const cache = createCache(dir);
-    cache.budget.updateLearnedCeiling('light', 12);
+    cache.budget.updateLearnedCeiling('enrich-light', {
+      size: 12,
+      observedAt: new Date().toISOString(),
+    });
     const { sources, batchSizes } = fakeSources({});
     await runEnrich(sources, cache, { in: path, ids: [] }, { now: NOW });
     expect(batchSizes).toEqual([12]);

@@ -143,29 +143,49 @@ describe('updateGrepAppBreaker', () => {
   });
 });
 
-describe('updateLearnedCeiling — fragmentWeight → batchSize', () => {
+describe('updateLearnedCeiling — fragmentWeight → {size, observedAt}', () => {
   test('adds a ceiling without disturbing other pools', () => {
     updatePool(file, 'graphqlPoints', {
       remaining: 5000,
       resetAt: '2026-07-10T01:00:00.000Z',
       lastCost: 1,
     });
-    updateLearnedCeiling(file, 'heavy', 10);
+    updateLearnedCeiling(file, 'heavy', { size: 10, observedAt: '2026-07-11T00:00:00.000Z' });
     const budget = loadBudget(file);
-    expect(budget.learnedCeilings).toEqual({ heavy: 10 });
+    expect(budget.learnedCeilings).toEqual({
+      heavy: { size: 10, observedAt: '2026-07-11T00:00:00.000Z' },
+    });
     expect(budget.graphqlPoints?.remaining).toBe(5000);
   });
 
   test('multiple fragment weights accumulate; re-learning overwrites just that key', () => {
-    updateLearnedCeiling(file, 'light', 25);
-    updateLearnedCeiling(file, 'heavy', 10);
-    updateLearnedCeiling(file, 'heavy', 8);
-    expect(loadBudget(file).learnedCeilings).toEqual({ light: 25, heavy: 8 });
+    updateLearnedCeiling(file, 'enrich-light', {
+      size: 25,
+      observedAt: '2026-07-11T00:00:00.000Z',
+    });
+    updateLearnedCeiling(file, 'heavy', { size: 10, observedAt: '2026-07-11T00:00:00.000Z' });
+    updateLearnedCeiling(file, 'heavy', { size: 8, observedAt: '2026-07-11T00:01:00.000Z' });
+    expect(loadBudget(file).learnedCeilings).toEqual({
+      'enrich-light': { size: 25, observedAt: '2026-07-11T00:00:00.000Z' },
+      heavy: { size: 8, observedAt: '2026-07-11T00:01:00.000Z' },
+    });
   });
 });
 
 describe('saveBudget', () => {
   test('is a plain atomic write usable directly', () => {
+    saveBudget(file, {
+      learnedCeilings: { heavy: { size: 10, observedAt: '2026-07-11T00:00:00.000Z' } },
+    });
+    expect(loadBudget(file)).toEqual({
+      learnedCeilings: { heavy: { size: 10, observedAt: '2026-07-11T00:00:00.000Z' } },
+    });
+  });
+
+  // The store itself stays shape-agnostic: a legacy pre-fix-wave-2 bare
+  // number round-trips verbatim. Migration/staleness handling is owned
+  // entirely by commands/_shared.ts's `freshCeiling`, not the store layer.
+  test('a legacy bare-number learnedCeilings entry round-trips untouched', () => {
     saveBudget(file, { learnedCeilings: { light: 25 } });
     expect(loadBudget(file)).toEqual({ learnedCeilings: { light: 25 } });
   });

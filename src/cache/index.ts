@@ -3,7 +3,14 @@
 // subpath — mirrors sources/index.ts's createSources shape. Pure local
 // persistence: nothing under src/cache/ touches the network.
 import * as budgetStore from './budget.ts';
-import type { Budget, GraphqlPoints, GrepAppBreaker, RateWindow, SimplePool } from './budget.ts';
+import type {
+  Budget,
+  GraphqlPoints,
+  GrepAppBreaker,
+  LearnedCeiling,
+  RateWindow,
+  SimplePool,
+} from './budget.ts';
 import type { EtagRecord } from './etags.ts';
 import * as etagsStore from './etags.ts';
 import { ensureMarker } from './marker.ts';
@@ -60,7 +67,7 @@ export interface Cache {
     updateGrepAppBreaker(
       state: GrepAppBreaker | ((prev: GrepAppBreaker | undefined) => GrepAppBreaker),
     ): Budget;
-    updateLearnedCeiling(fragmentWeight: string, batchSize: number): Budget;
+    updateLearnedCeiling(fragmentWeight: string, ceiling: LearnedCeiling): Budget;
   };
 }
 
@@ -127,9 +134,9 @@ export function createCache(rootOverride?: string): Cache {
         mark();
         return budgetStore.updateGrepAppBreaker(paths.budgetFile, state);
       },
-      updateLearnedCeiling: (fragmentWeight, batchSize) => {
+      updateLearnedCeiling: (fragmentWeight, ceiling) => {
         mark();
-        return budgetStore.updateLearnedCeiling(paths.budgetFile, fragmentWeight, batchSize);
+        return budgetStore.updateLearnedCeiling(paths.budgetFile, fragmentWeight, ceiling);
       },
     },
   };

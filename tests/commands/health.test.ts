@@ -409,8 +409,8 @@ describe('runHealth — end-to-end coverage completion', () => {
   });
 });
 
-describe('runHealth — learned GraphQL batch ceilings (task 12)', () => {
-  test('a bisected effective size below the requested batch persists a tighter heavy ceiling', async () => {
+describe('runHealth — learned GraphQL batch ceilings (task 12, fix wave 2: floor + per-fragment classes)', () => {
+  test('a bisected effective size below the requested batch persists a tighter heavy ceiling, floored at 5', async () => {
     const names = ['o/one'];
     const path = writeCorpus(
       dir,
@@ -420,10 +420,11 @@ describe('runHealth — learned GraphQL batch ceilings (task 12)', () => {
     const handle = fakeSources({
       probe: 'available',
       heavy: Object.fromEntries(names.map((n) => [n, heavyNode(n)])),
-      effectiveSize: 3, // simulated bisection, below the static heavy default of 10
+      effectiveSize: 3, // simulated bisection, below the static heavy default of 10 AND the floor of 5
     });
     await runHealth(handle.sources, cache, { in: path, ids: names }, { now: NOW });
-    expect(cache.budget.load().learnedCeilings.heavy).toBe(3);
+    // Floored at 5, not the raw observed 3 (fix wave 2 IMP 1).
+    expect(cache.budget.load().learnedCeilings.heavy).toMatchObject({ size: 5 });
   });
 
   test('a subsequent health run starts from the learned heavy ceiling instead of the static 10 default', async () => {
@@ -433,23 +434,27 @@ describe('runHealth — learned GraphQL batch ceilings (task 12)', () => {
       names.map((n) => enrichedRepo(n)),
     );
     const cache = createCache(dir);
-    cache.budget.updateLearnedCeiling('heavy', 3);
+    cache.budget.updateLearnedCeiling('heavy', { size: 6, observedAt: new Date().toISOString() });
     const handle = fakeSources({
       probe: 'available',
       heavy: Object.fromEntries(names.map((n) => [n, heavyNode(n)])),
     });
     await runHealth(handle.sources, cache, { in: path, ids: names }, { now: NOW });
-    expect(handle.heavyBatchSizes).toEqual([3]);
+    expect(handle.heavyBatchSizes).toEqual([6]);
   });
 
-  test("a learned ceiling never blows past the static 10 default (enrich's 25-light ceiling is a different weight class)", async () => {
+  test("a learned ceiling never blows past the static 10 default (enrich's ceiling is a different fragment class)", async () => {
     const names = ['o/one'];
     const path = writeCorpus(
       dir,
       names.map((n) => enrichedRepo(n)),
     );
     const cache = createCache(dir);
-    cache.budget.updateLearnedCeiling('light', 25); // unrelated weight class, must not leak into heavy
+    // unrelated fragment class, must not leak into heavy.
+    cache.budget.updateLearnedCeiling('enrich-light', {
+      size: 8,
+      observedAt: new Date().toISOString(),
+    });
     const handle = fakeSources({
       probe: 'available',
       heavy: Object.fromEntries(names.map((n) => [n, heavyNode(n)])),

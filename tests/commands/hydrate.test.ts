@@ -155,25 +155,41 @@ describe('runHydrate — batch size + fragment', () => {
   });
 });
 
-describe('runHydrate — learned GraphQL batch ceilings (task 12)', () => {
-  test('a bisected effective size below the requested batch persists a tighter light ceiling', async () => {
+describe('runHydrate — learned GraphQL batch ceilings (task 12, fix wave 2: per-fragment classes)', () => {
+  test('a bisected effective size below the requested batch persists a tighter pre-enrich ceiling', async () => {
     const cache = createCache(dir);
     const ghGraphql = fakeGhGraphql(
       (names) => names.map((name) => ({ name, data: fixtureNode({ nameWithOwner: name }) })),
       12, // simulated bisection landed below hydrate's static default of 50
     );
     await runHydrate({ ghGraphql }, cache, { ids: ['octocat/hello-world'] }, '');
-    expect(cache.budget.load().learnedCeilings.light).toBe(12);
+    expect(cache.budget.load().learnedCeilings['pre-enrich']).toMatchObject({ size: 12 });
   });
 
   test('a subsequent hydrate starts from the learned ceiling instead of the static 50 default', async () => {
     const cache = createCache(dir);
-    cache.budget.updateLearnedCeiling('light', 12);
+    cache.budget.updateLearnedCeiling('pre-enrich', {
+      size: 12,
+      observedAt: new Date().toISOString(),
+    });
     const ghGraphql = fakeGhGraphql((names) =>
       names.map((name) => ({ name, data: fixtureNode({ nameWithOwner: name }) })),
     );
     await runHydrate({ ghGraphql }, cache, { ids: ['octocat/hello-world'] }, '');
     expect(ghGraphql.calls[0]?.batchSize).toBe(12);
+  });
+
+  test("an enrich-light ceiling never throttles hydrate's pre-enrich fragment (fix wave 2 IMP 2)", async () => {
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('enrich-light', {
+      size: 8,
+      observedAt: new Date().toISOString(),
+    });
+    const ghGraphql = fakeGhGraphql((names) =>
+      names.map((name) => ({ name, data: fixtureNode({ nameWithOwner: name }) })),
+    );
+    await runHydrate({ ghGraphql }, cache, { ids: ['octocat/hello-world'] }, '');
+    expect(ghGraphql.calls[0]?.batchSize).toBe(50); // hydrate's own static default, untouched
   });
 });
 

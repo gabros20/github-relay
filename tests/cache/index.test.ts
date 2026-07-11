@@ -131,7 +131,10 @@ describe('createCache — every store write stamps the ownership marker (fix wav
 
   test('budget.updateLearnedCeiling stamps the marker', () => {
     const cache = createCache(dir);
-    cache.budget.updateLearnedCeiling('light', 25);
+    cache.budget.updateLearnedCeiling('heavy', {
+      size: 25,
+      observedAt: '2026-07-11T00:00:00.000Z',
+    });
     expect(hasMarker(dir)).toBe(true);
   });
 

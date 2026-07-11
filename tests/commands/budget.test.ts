@@ -85,12 +85,17 @@ describe('runBudget — zero-cost default + the one free /rate_limit call', () =
   test('reports pools already on disk (learnedCeilings, ecosystems) that /rate_limit never touches', async () => {
     const cache = createCache(dir);
     cache.budget.updatePool('ecosystems', { remaining: 14000, resetAt: '2026-01-01T00:00:00Z' });
-    cache.budget.updateLearnedCeiling('light', 20);
+    cache.budget.updateLearnedCeiling('heavy', {
+      size: 20,
+      observedAt: '2026-07-11T00:00:00.000Z',
+    });
     const ghRest = fakeGhRest(rateLimitBody());
 
     const result = await runBudget({ ghRest }, cache, {});
     expect(result.pools.ecosystems?.remaining).toBe(14000);
-    expect(result.pools.learnedCeilings).toEqual({ light: 20 });
+    expect(result.pools.learnedCeilings).toEqual({
+      heavy: { size: 20, observedAt: '2026-07-11T00:00:00.000Z' },
+    });
   });
 
   test('a failing /rate_limit call propagates (budget has no always-ok:true contract — that is doctor only)', async () => {

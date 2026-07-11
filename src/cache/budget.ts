@@ -22,6 +22,18 @@ export interface GrepAppBreaker {
   retryAt?: string;
 }
 
+/**
+ * fragmentWeight → the tightest batch size a real bisection has observed
+ * succeeding, plus when (fix wave 2 IMP 1). `observedAt` is what lets a
+ * consumer decide the entry is stale — a bare `number` (the pre-fix-wave-2
+ * shape, no timestamp) is always treated as stale on read, since there's
+ * nothing to age it against; `commands/_shared.ts` owns that migration.
+ */
+export interface LearnedCeiling {
+  size: number;
+  observedAt: string;
+}
+
 export interface Budget {
   graphqlPoints?: GraphqlPoints;
   restCore?: RateWindow;
@@ -29,8 +41,8 @@ export interface Budget {
   ecosystems?: RateWindow;
   ossinsight?: RateWindow;
   grepApp?: GrepAppBreaker;
-  /** fragmentWeight → the largest batch size observed to succeed. */
-  learnedCeilings: Record<string, number>;
+  /** fragmentWeight → its learned ceiling, or (legacy) a bare pre-fix-wave-2 number. */
+  learnedCeilings: Record<string, number | LearnedCeiling>;
 }
 
 const EMPTY_BUDGET: Budget = { learnedCeilings: {} };
@@ -82,12 +94,12 @@ export function updateGrepAppBreaker(
 export function updateLearnedCeiling(
   path: string,
   fragmentWeight: string,
-  batchSize: number,
+  ceiling: LearnedCeiling,
 ): Budget {
   const budget = loadBudget(path);
   const next: Budget = {
     ...budget,
-    learnedCeilings: { ...budget.learnedCeilings, [fragmentWeight]: batchSize },
+    learnedCeilings: { ...budget.learnedCeilings, [fragmentWeight]: ceiling },
   };
   saveBudget(path, next);
   return next;
