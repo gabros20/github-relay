@@ -23,7 +23,10 @@ describe('parseOwnerRepo', () => {
 });
 
 function fakeGhRest(
-  handler: (path: string, opts: { etag?: string }) => {
+  handler: (
+    path: string,
+    opts: { etag?: string },
+  ) => {
     status: number;
     body: unknown;
     etag: string | null;

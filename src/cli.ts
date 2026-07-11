@@ -5,13 +5,16 @@
 // process.exit itself — main() below owns that translation.
 import { type Cache, createCache } from './cache/index.ts';
 import { batchOptsFromArgs, runBatch } from './commands/batch.ts';
+import { digestOptsFromArgs, runDigest } from './commands/digest.ts';
 import { enrichOptsFromArgs, runEnrich } from './commands/enrich.ts';
 import { hydrateOptsFromArgs, runHydrate } from './commands/hydrate.ts';
 import { rankOptsFromArgs, runRank } from './commands/rank.ts';
+import { readOptsFromArgs, runRead } from './commands/read.ts';
 import { commandNames } from './commands/registry.ts';
 import { COMMANDS } from './commands/registry.ts';
 import { guard } from './commands/runners.ts';
 import { runSearch, searchOptsFromArgs } from './commands/search.ts';
+import { runSkim, skimOptsFromArgs } from './commands/skim.ts';
 import { shouldRunAsEntry } from './entry.ts';
 import { err, toJson } from './output.ts';
 import { type Sources, createSources } from './sources/index.ts';
@@ -138,13 +141,14 @@ function helpText(): string {
 // ── dispatch ─────────────────────────────────────────────────────────────
 
 /**
- * Dispatch a parsed command against Sources. `search`/`batch`/`hydrate` are
- * wired to their runners (task 4), each wrapped in `guard()` so an
- * EngineError becomes a per-code envelope. Every other registered command
- * still falls through to a clear "not yet implemented" envelope (tasks
- * 5-13). A name outside the registry gets the same UNKNOWN_COMMAND code with
- * a different message, so the CLI's exit-code rule (`error.code ===
- * 'UNKNOWN_COMMAND' → exit 2`) covers both cases uniformly.
+ * Dispatch a parsed command against Sources. search/batch/hydrate (task 4),
+ * enrich/rank (task 5), and skim/read/digest (task 6) are wired to their
+ * runners, each wrapped in `guard()` so an EngineError becomes a per-code
+ * envelope. Every other registered command still falls through to a clear
+ * "not yet implemented" envelope (tasks 7-13). A name outside the registry
+ * gets the same UNKNOWN_COMMAND code with a different message, so the CLI's
+ * exit-code rule (`error.code === 'UNKNOWN_COMMAND' → exit 2`) covers both
+ * cases uniformly.
  */
 export function dispatch(
   parsed: ParsedArgs,
@@ -176,6 +180,12 @@ export function dispatch(
       // rank is offline: it never receives Sources — enforced by runRank's
       // signature taking only opts (design §3.7, zero network).
       return guard('rank', () => Promise.resolve(runRank(rankOptsFromArgs(parsed))));
+    case 'skim':
+      return guard('skim', () => runSkim(sources, cache, skimOptsFromArgs(parsed)));
+    case 'read':
+      return guard('read', () => runRead(sources, cache, readOptsFromArgs(parsed)));
+    case 'digest':
+      return guard('digest', () => runDigest(sources, cache, digestOptsFromArgs(parsed)));
     default:
       return Promise.resolve(
         err(

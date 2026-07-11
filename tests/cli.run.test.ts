@@ -36,10 +36,20 @@ describe('run — unknown command', () => {
   });
 });
 
-// search/batch/hydrate are wired (task 4) — their own envelope/exit-code
-// contract is covered in tests/cli.dispatch.test.ts. Every other registered
-// command still falls through to the "not yet implemented" path here.
-const WIRED_COMMANDS = new Set(['search', 'batch', 'hydrate', 'enrich', 'rank']);
+// search/batch/hydrate (task 4), enrich/rank (task 5), and skim/read/digest
+// (task 6) are wired — their own envelope/exit-code contract is covered in
+// tests/cli.dispatch.test.ts. Every other registered command still falls
+// through to the "not yet implemented" path here.
+const WIRED_COMMANDS = new Set([
+  'search',
+  'batch',
+  'hydrate',
+  'enrich',
+  'rank',
+  'skim',
+  'read',
+  'digest',
+]);
 const UNIMPLEMENTED_COMMANDS = commandNames.filter((name) => !WIRED_COMMANDS.has(name));
 
 describe('run — registered but unimplemented command', () => {
@@ -74,6 +84,35 @@ describe('run — enrich/rank are now wired (task 5)', () => {
 
   test('rank without a corpus path → INVALID_INPUT, exit 1', async () => {
     const { stdout, exitCode } = await run(['rank'], {});
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('run — skim/read/digest are now wired (task 6)', () => {
+  test('skim without a repo → INVALID_INPUT, exit 1 (not the unimplemented path)', async () => {
+    const { stdout, exitCode } = await run(['skim'], {});
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+
+  test('read without any paths → INVALID_INPUT, exit 1', async () => {
+    const { stdout, exitCode } = await run(['read', 'o/r'], {});
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+
+  test('digest without a repo → INVALID_INPUT, exit 1', async () => {
+    const { stdout, exitCode } = await run(['digest'], {});
     expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);

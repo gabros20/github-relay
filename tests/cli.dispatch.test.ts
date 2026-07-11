@@ -216,6 +216,145 @@ describe('dispatch — rank (task 5, offline)', () => {
   });
 });
 
+const SHA = 'a'.repeat(40);
+
+/** A minimal fake ghRest good enough for skim/read/digest dispatch-contract checks (no real network). */
+function fakeGhRestForExtraction(): Sources['ghRest'] {
+  return {
+    get: async (path: string) => {
+      if (path.includes('/commits/')) {
+        return {
+          status: 200,
+          headers: new Headers({ 'x-ratelimit-remaining': '1', 'x-ratelimit-reset': '2000000000' }),
+          body: { sha: SHA },
+          etag: '"c1"',
+        };
+      }
+      if (path.includes('/git/trees/')) {
+        return {
+          status: 200,
+          headers: new Headers({ 'x-ratelimit-remaining': '1', 'x-ratelimit-reset': '2000000000' }),
+          body: {
+            truncated: false,
+            tree: [{ path: 'README.md', type: 'blob', sha: 'b'.repeat(40), size: 5 }],
+          },
+          etag: '"t1"',
+        };
+      }
+      if (path.includes('/readme')) {
+        return {
+          status: 200,
+          headers: new Headers({ 'x-ratelimit-remaining': '1', 'x-ratelimit-reset': '2000000000' }),
+          body: '# hi',
+          etag: '"r1"',
+        };
+      }
+      if (path.includes('/contents/')) {
+        return {
+          status: 200,
+          headers: new Headers({ 'x-ratelimit-remaining': '1', 'x-ratelimit-reset': '2000000000' }),
+          body: {
+            content: Buffer.from('# hi').toString('base64'),
+            encoding: 'base64',
+            sha: 'b'.repeat(40),
+            type: 'file',
+          },
+          etag: null,
+        };
+      }
+      throw new Error(`unmapped fetch in dispatch test: ${path}`);
+    },
+    tarballUrl: async () => 'https://codeload.github.com/o/r/tar',
+    downloadTarball: async () => {
+      throw new Error('digest dispatch tests use INVALID_INPUT before any tarball fetch');
+    },
+  } as unknown as Sources['ghRest'];
+}
+
+describe('dispatch — skim (task 6)', () => {
+  test('a valid skim → ok:true, exit 0', async () => {
+    const sources = fakeSources();
+    sources.ghRest = fakeGhRestForExtraction();
+    const { stdout, exitCode } = await run(
+      ['skim', 'o/r', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.command).toBe('skim');
+  });
+
+  test('a repo without a slash → INVALID_INPUT, exit 1', async () => {
+    const sources = fakeSources();
+    sources.ghRest = fakeGhRestForExtraction();
+    const { stdout, exitCode } = await run(
+      ['skim', 'not-a-repo', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('dispatch — read (task 6)', () => {
+  test('a valid read → ok:true, exit 0', async () => {
+    const sources = fakeSources();
+    sources.ghRest = fakeGhRestForExtraction();
+    const { stdout, exitCode } = await run(
+      ['read', 'o/r', 'README.md', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.command).toBe('read');
+  });
+
+  test('zero paths → INVALID_INPUT, exit 1', async () => {
+    const sources = fakeSources();
+    sources.ghRest = fakeGhRestForExtraction();
+    const { stdout, exitCode } = await run(
+      ['read', 'o/r', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('dispatch — digest (task 6)', () => {
+  test('a repo without a slash → INVALID_INPUT, exit 1, zero network', async () => {
+    const sources = fakeSources();
+    sources.ghRest = fakeGhRestForExtraction();
+    const { stdout, exitCode } = await run(
+      ['digest', 'not-a-repo', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+});
+
 describe('acceptance — corpus round-trips through search --out then batch --out (merge, not clobber)', () => {
   test('a repo written by search survives a later batch --out to the same file, plus the batch repo joins it', async () => {
     const out = join(dir, 'corpus.json');

@@ -77,7 +77,7 @@ export const COMMANDS: CommandDef[] = [
     name: 'skim',
     cost: '2 REST core calls (cached: 0)',
     summary: 'A repo tree inventory + README head — the cheap structural peek before a full read.',
-    usage: 'ghrelay skim <owner/repo> [--max-chars 4000] [--tree-only]',
+    usage: 'ghrelay skim <owner/repo> [--max-chars 4000] [--tree-only] [--in corpus.json]',
   },
   {
     name: 'read',
