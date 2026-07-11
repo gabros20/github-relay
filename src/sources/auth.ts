@@ -8,8 +8,17 @@ import { spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import { EngineError } from '../types.ts';
 
+export interface ExecOpts {
+  /** Abort the running child (SIGTERM) when this fires — used to actually kill a
+   * timed-out check/clone instead of leaving it running after the caller gives up. */
+  signal?: AbortSignal;
+}
+
 /** Runs an argv and returns its stdout + exit code. Injected in tests. */
-export type Exec = (cmd: string[]) => Promise<{ stdout: string; exitCode: number }>;
+export type Exec = (
+  cmd: string[],
+  opts?: ExecOpts,
+) => Promise<{ stdout: string; exitCode: number }>;
 
 export interface ResolveTokenDeps {
   /** Environment to read GH_TOKEN / GITHUB_TOKEN from (defaults to process.env). */
@@ -35,7 +44,7 @@ export interface NodeExecOptions {
  */
 export function createNodeExec(opts: NodeExecOptions = {}): Exec {
   const combineStderr = opts.combineStderr === true;
-  return (cmd) =>
+  return (cmd, execOpts) =>
     new Promise((resolve) => {
       const [command, ...args] = cmd;
       if (!command) {
@@ -49,7 +58,13 @@ export function createNodeExec(opts: NodeExecOptions = {}): Exec {
         // shim measurably differs here (throws synchronously for ENOENT), so
         // this try/catch is required to keep the "never rejects" contract
         // consistent across both runtimes, not optional defensiveness.
-        proc = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        // `signal` lets a caller (doctor's per-check timeout, digest's clone
+        // timeout) actually kill this child on timeout — node's spawn sends
+        // SIGTERM automatically on abort, rather than leaving it running.
+        proc = spawn(command, args, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          signal: execOpts?.signal,
+        });
       } catch {
         resolve({ stdout: '', exitCode: 1 });
         return;

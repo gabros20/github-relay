@@ -40,6 +40,15 @@ const MAX_TARBALL_BYTES = 200 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES = MAX_TARBALL_BYTES * 4;
 const MAX_FILE_BYTES = 1024 * 1024;
 const HEX_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/**
+ * Hard bound on the git-clone fallback — unlike the tarball path (which has
+ * no long-running child process), a blobless shallow clone had NO timeout at
+ * all: a stuck network transfer would hang the whole `digest` call
+ * indefinitely. Generous on purpose (a large repo's clone can legitimately
+ * take a while) — this is a "never hangs forever" backstop, not a
+ * performance target.
+ */
+const CLONE_TIMEOUT_MS = 120_000;
 
 export interface DigestOpts {
   repo?: string;
@@ -301,7 +310,19 @@ async function viaClone(
   if (ref && ref !== 'HEAD' && !HEX_SHA_RE.test(ref)) args.push('--branch', ref);
   args.push(`https://github.com/${owner}/${repo}.git`, targetDir);
 
-  const { exitCode, stdout } = await exec(args);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLONE_TIMEOUT_MS);
+  timer.unref?.();
+  let exitCode: number;
+  let stdout: string;
+  try {
+    ({ exitCode, stdout } = await exec(args, { signal: controller.signal }));
+  } finally {
+    clearTimeout(timer);
+  }
+  if (controller.signal.aborted) {
+    throw new EngineError('FETCH_FAILED', `git clone timed out after ${CLONE_TIMEOUT_MS}ms`);
+  }
   if (exitCode !== 0) {
     throw new EngineError('FETCH_FAILED', `git clone failed: ${stdout.slice(0, 500)}`);
   }

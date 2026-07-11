@@ -76,10 +76,19 @@ export function doctorOptsFromArgs(parsed: ParsedArgs): DoctorOpts {
 
 const defaultExec: Exec = createNodeExec();
 
-/** Races `promise` against `ms`; a timeout rejects (never hangs the whole run) and leaves no dangling timer once either side settles. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/**
+ * Races `promise` against `ms`; a timeout rejects (never hangs the whole run)
+ * and leaves no dangling timer once either side settles. `onTimeout`, when
+ * given, fires the moment the timer wins — used to actually cancel the
+ * underlying work (e.g. kill a spawned child) instead of leaving it running
+ * after this function has already moved on and reported a timeout.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`check timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new Error(`check timed out after ${ms}ms`));
+    }, ms);
     timer.unref?.();
     promise.then(
       (v) => {
@@ -94,14 +103,24 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-/** Never throws: any failure (including a timeout) becomes `{ok:false, detail:message}` — the "failing check = data" contract. */
+/**
+ * Never throws: any failure (including a timeout) becomes `{ok:false,
+ * detail:message}` — the "failing check = data" contract. `fn` receives an
+ * `AbortSignal` tied to this check's own timeout (most checks ignore it —
+ * only the `git` check's exec-backed probe uses it) so a timed-out check
+ * actually kills whatever it started rather than leaving it running after
+ * the timeout has already been reported.
+ */
 async function runCheck(
   name: string,
   timeoutMs: number,
-  fn: () => Promise<{ ok: boolean; detail: string }>,
+  fn: (signal: AbortSignal) => Promise<{ ok: boolean; detail: string }>,
 ): Promise<DoctorCheck> {
+  const controller = new AbortController();
   try {
-    const { ok, detail } = await withTimeout(fn(), timeoutMs);
+    const { ok, detail } = await withTimeout(fn(controller.signal), timeoutMs, () =>
+      controller.abort(),
+    );
     return { name, ok, detail };
   } catch (e) {
     return { name, ok: false, detail: e instanceof Error ? e.message : String(e) };
@@ -194,8 +213,8 @@ export async function runDoctor(
   );
 
   checks.push(
-    await runCheck('git', timeoutMs, async () => {
-      const { stdout, exitCode } = await exec(['git', '--version']);
+    await runCheck('git', timeoutMs, async (signal) => {
+      const { stdout, exitCode } = await exec(['git', '--version'], { signal });
       if (exitCode !== 0) throw new Error('git binary not found');
       return { ok: true, detail: stdout.trim() || 'git present' };
     }),

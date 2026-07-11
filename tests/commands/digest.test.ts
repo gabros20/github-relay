@@ -511,6 +511,36 @@ describe('runDigest — clone fallback', () => {
       runDigest({ ghRest }, cache, { repo: 'o/r', include: [], exclude: [] }, { exec }),
     ).rejects.toBeInstanceOf(EngineError);
   });
+
+  // Pre-fix, viaClone had NO bound at all — a stuck `git clone` (network hang)
+  // could wedge the whole `digest` call forever. The actual "abort kills the
+  // child" mechanism is proven generically against a real process in
+  // tests/sources/exec.test.ts; this test just proves the clone call is
+  // wired to a real AbortSignal at all (a 120s real-timeout wait isn't a
+  // sane thing to do in a fast test suite).
+  test('the clone git-clone call is given a real AbortSignal (task 8b fix wave 2)', async () => {
+    const cache = createCache(dir);
+    const { ghRest } = fakeSources({
+      downloadTarball: async () => {
+        throw new EngineError('FETCH_FAILED', 'tarball exceeds the 200MB size guard');
+      },
+    });
+    let cloneSignal: AbortSignal | undefined;
+    const exec: Exec = async (cmd, opts) => {
+      if (cmd[0] === 'git' && cmd[1] === '--version') return { stdout: 'git 2.44.0', exitCode: 0 };
+      if (cmd[0] === 'git' && cmd[1] === 'clone') {
+        cloneSignal = opts?.signal;
+        const targetDir = cmd[cmd.length - 1] as string;
+        mkdirSync(targetDir, { recursive: true });
+        writeFileSync(join(targetDir, 'README.md'), '# cloned');
+        return { stdout: '', exitCode: 0 };
+      }
+      return { stdout: 'unrecognized', exitCode: 1 };
+    };
+    await runDigest({ ghRest }, cache, { repo: 'o/r', include: [], exclude: [] }, { exec });
+    expect(cloneSignal).toBeInstanceOf(AbortSignal);
+    expect(cloneSignal?.aborted).toBe(false);
+  });
 });
 
 describe('runDigest — --ref resolution', () => {

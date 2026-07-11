@@ -61,3 +61,26 @@ describe('createNodeExec — combineStderr', () => {
     expect(result.stdout).toContain('ERRTAG');
   });
 });
+
+describe('createNodeExec — abort kills the child (task 8b fix wave 2)', () => {
+  // Pre-fix, doctor's per-check timeout raced the exec promise but left the
+  // spawned child running to completion regardless (reproduced live: a 1s
+  // reported timeout, a child that kept running for the full ~30s). This
+  // spawns a REAL 30s sleep-style child and aborts it after 100ms — if abort
+  // didn't actually kill the process, this test would itself take ~30s
+  // (or hang) instead of resolving promptly.
+  test('aborting the signal kills a long-running child instead of waiting it out', async () => {
+    const exec = createNodeExec();
+    const controller = new AbortController();
+    const start = Date.now();
+    setTimeout(() => controller.abort(), 100);
+
+    const result = await exec([process.execPath, '-e', 'setTimeout(() => {}, 30000)'], {
+      signal: controller.signal,
+    });
+    const elapsedMs = Date.now() - start;
+
+    expect(elapsedMs).toBeLessThan(5000);
+    expect(result.exitCode).not.toBe(0);
+  });
+});

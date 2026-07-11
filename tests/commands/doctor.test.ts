@@ -285,3 +285,31 @@ describe('runDoctor — git binary presence', () => {
     expect(other.every((c) => c.ok)).toBe(true);
   });
 });
+
+describe('runDoctor — a timed-out git check kills its child (task 8b fix wave 2)', () => {
+  // Pre-fix, doctor's timeout raced the exec promise but never cancelled the
+  // underlying work — a hung `git` process kept running after the timeout
+  // was already reported. This fakes a hung exec that only ever settles on
+  // abort, and asserts the check's own AbortSignal is actually the one that
+  // gets aborted when the timeout fires.
+  test('the git check timing out aborts the AbortSignal passed to exec', async () => {
+    const cache = createCache(dir);
+    let capturedSignal: AbortSignal | undefined;
+    const deps: DoctorDeps = {
+      ...happyDeps(),
+      timeoutMs: 20,
+      exec: (_cmd, opts) =>
+        new Promise((_resolve, reject) => {
+          capturedSignal = opts?.signal;
+          opts?.signal?.addEventListener('abort', () => reject(new Error('killed on abort')));
+          // Deliberately never resolves on its own — simulates a hung `git` process.
+        }),
+    };
+    const result = await runDoctor(happySources(), cache, {}, deps);
+    const git = result.checks.find((c) => c.name === 'git');
+    expect(git?.ok).toBe(false);
+    expect(git?.detail).toContain('timed out');
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+});
