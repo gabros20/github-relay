@@ -1,5 +1,264 @@
-# github-relay (placeholder)
+# github-relay
 
-This SKILL.md is a placeholder so the `scripts/generate-skill.ts` build pipeline has real content
-to inline. The funnel-first skill content (three golden rules, command walkthrough) ships in a
-later task — see PLAN.md milestone A.8.
+**"Research GitHub, not read GitHub."** A zero-paid-API, LLM-free CLI (`ghrelay`) + MCP server
+(`github-relay-mcp`) + this skill. You expand a natural-language intent into concrete inputs
+(query shards, candidate ids from your own web research, code-token probes); github-relay casts
+a wide net across four discovery lanes, ranks offline on maintenance/real-usage/star-skeptical
+signals with explainable, coverage-honest subscores, and deep-reads only the 2–3 finalists. One
+free zero-permission fine-grained PAT. No paid API keys, ever.
+
+## Three golden rules
+
+1. **NEVER deep-read code during exploration.** Rank on cheap metadata first; `digest`/`read`
+   only the finalists that survive `rank` (and `health`, when it ships).
+2. **The agent expands intent; the tool executes slices.** You decompose "editor for markdown
+   on macOS" into query shards, candidate ids, and code-token probes — github-relay never guesses
+   intent for you, and never silently narrows a slice you didn't ask it to.
+3. **For fuzzy intents, web-search first and `hydrate` what humans curated.** Keyword search
+   loses on flagship/niche intents that "best X" threads, awesome lists, and blog posts already
+   solved. Your own WebSearch is a first-class discovery lane — feed its owner/repo ids straight
+   into `hydrate`.
+
+---
+
+## The funnel
+
+```
+GATE 0 — plan                     roadmap (v0.1 milestone B) — not yet implemented.
+  For now: hand-write 3-6 query shards yourself (design §3 item 1's validation rules still
+  apply informally — keep each under 256 chars / 5 AND·OR·NOT operators, or `search`/`batch`
+  will reject it with QUERY_TOO_COMPLEX and a split hint).
+
+GATE 1 — wide net                 cheap: search / batch / hydrate
+  ghrelay batch --file shards.txt --out corpus.json
+  ghrelay hydrate <owner/repo...> --out corpus.json     # from YOUR web search — see rule 3
+  → 100-500 deduped, pre-enriched candidates in the corpus. Read nothing but counts yet.
+
+GATE 2 — enrich + rank            ~2-4 GraphQL pts + zero-quota third parties, then free
+  ghrelay enrich --in corpus.json --top 50
+  ghrelay rank corpus.json --profile build-on --top 20
+  → 20 fifty-token rows: score, 7 subscores, coverage, flags, truncated description. Shortlist
+  ~8 from THIS, not from code. Re-weighting (`--weights`) costs 0 — refetches nothing.
+
+GATE 3 — verify                   health: roadmap (v0.1 milestone B). skim: available now.
+  ghrelay skim <owner/repo>       # tree inventory + README head, 2 REST calls (cached: 0)
+  Cut to 2-3 survivors on structure + README signal. `health` (issue latency, star-velocity
+  burstiness, bus factor, coverage→7/7) lands in a later task — until then, rank's `coverage`
+  field is honest about which groups (C/D/F) are still thin.
+
+GATE 4 — deep read                expensive: digest / read
+  ghrelay digest <owner/repo> --max-tokens 20000 --out digest.md
+  ghrelay read <owner/repo> <path...>     # targeted; repeat reads are free (cached:true)
+  → Read only the digest slices you actually need.
+```
+
+Every command's help/registry cost hint tells you what it spends BEFORE you run it — cheap
+discovery always happens before expensive extraction. Every truncation carries a steering
+message (e.g. "showing 30 of 412 — use --limit or slice by created:").
+
+---
+
+## Commands (atomic reference)
+
+All commands print a JSON envelope to stdout: `{ok, command, data}` on success,
+`{ok:false, command, error:{code, message, hint, status?, retryAfterMs?}}` on failure.
+Exit codes: 0 ok, 1 command error, 2 unknown command. Over MCP, every tool forces `--quiet`
+(no stderr progress) and `--compact` (single-line JSON) — you never need to pass either.
+
+### `search` — cheap, 1 GraphQL point per 100 results. The wide net.
+```
+ghrelay search <query> [--source gh|rest|trending] [--limit 30]
+       [--language X --topic Y --stars A..B --created R --pushed R --sort stars|updated]
+       [--fields a,b,c] [--out corpus.json]
+```
+- One `search(type:REPOSITORY, first:100)` page (or `--source rest` fallback), pre-enriched —
+  stars, forks, pushedAt, createdAt, license, topics, language, archived, description — zero
+  extra calls. `--source trending` (OSS Insight) is roadmap (v0.1 milestone B).
+- Without `--out`: prints compact rows (or `--fields` projects just those columns). With
+  `--out`: merges into the corpus (fresh-wins) and returns a `{count, merged, out}` summary
+  instead — **over MCP, `out` is REQUIRED**, so a big result page never transits the model.
+- `RESULT_CAP` (>1,000 results) carries a ready-made `stars:`/`created:` shard-split hint.
+
+### `batch` — N points, strictly serialized. Many shards → one deduped corpus.
+```
+ghrelay batch --file queries.txt --out corpus.json [--delay 2000] [--dry-run]
+```
+- One query per line (`#` comments and blank lines skipped). Runs serialized with `--delay`
+  ms between queries (a `RATE_LIMITED` `retryAfterMs` REPLACES the delay for that gap),
+  continue-on-error with a `perQuery[]` ledger, cross-query dedupe by `full_name`, incremental
+  merge into `--out` (safe to re-run to top up the same file). `--dry-run` validates every
+  query's shape offline (256 chars / 5 operators) — zero network, no `--out` needed.
+
+### `hydrate` — ~1 GraphQL point per 50 ids. The multi-source lane (golden rule 3).
+```
+ghrelay hydrate <owner/repo...> [--out corpus.json] [-]
+```
+- Ingest candidate ids YOU found anywhere — your own WebSearch over HN/Reddit "best X" threads,
+  awesome lists, blog posts — hydrated via one aliased GraphQL batch, tagged `source:"agent"`
+  in the corpus. `-` reads newline-separated ids from stdin (only when explicitly present).
+  Per-id failures are soft (`failed[]`); shape validation is a hard `INVALID_INPUT` pre-flight.
+
+### `enrich` — ~2-4 GraphQL points per 50 repos + zero-quota third parties. GATE 2.
+```
+ghrelay enrich --in corpus.json [ids...] [--top 50] [--skip-deps] [--stale-ok]
+```
+- Aliased batches of 25: the ~15-signal light fragment (commits-last-90d, state-split
+  issue/PR totals, `latestRelease.publishedAt`, license, funding links, watchers,
+  `mentionableUsers.totalCount`, diskUsage, fork/template/archived/disabled, org-owned).
+  Then the ONE mandatory B-group (real-usage) fallback chain per repo: ecosyste.ms
+  `bulk_lookup` → deps.dev `:dependents` (aggregated over the last 3 versions) →
+  `packaged:false` + nodata. Every signal lands with `{value, source, fetchedAt}` provenance.
+  `--top 50` (default selection) takes the highest-star unenriched rows; `--stale-ok` re-covers
+  rows enriched >7 days ago; `--skip-deps` skips the B-chain (GraphQL signals only).
+
+### `rank` — free, offline, zero network. GATE 2 scoring.
+```
+ghrelay rank <corpus.json> [--profile build-on|dissect|ideas] [--weights A=25,B=20,...]
+       [--top 20] [--min-score N] [--explain owner/repo] [--jsonl]
+```
+- Scores from cached signals on 7 groups (A Maintenance, B Real usage, C Community,
+  D Responsiveness, E Quality proxies, F Popularity-validity, L License class). Compact rows
+  (~50 tokens): `{r, s, subs, coverage, d (90-char description), st, vel, dep, lic, push, f[],
+  nodata[]}`. Header states average/min coverage and which command completes missing groups.
+  `--explain owner/repo` prints the full saturation + penalty trail for one row. Re-ranking
+  with a different `--profile`/`--weights` refetches NOTHING.
+- Profiles: `build-on` (default, general "is this solid to depend on") — A25 B20 C15 D10 E10
+  F10 L10. `dissect` (study internals) — E40 Structure20 A5 B10 C10 D5 F10. `ideas`
+  (novelty/inspiration) — Recency30 F25 E20 Novelty15 B+C10.
+- **License is classification metadata, never a filter** — always reported (`lic`), weighted
+  only where the active profile says. **Raw stars never rank** — they gate the wide net and
+  feed derived signals (velocity, burstiness) only; a repo's `f[]` flags (e.g. `star-burst`,
+  `possible-fake-stars`, `ratio-anomaly`) tell you WHY a star count might be misleading, not
+  just that it's high.
+
+### `skim` — 2 REST core calls (cached: 0). The cheap structural peek, GATE 3.5.
+```
+ghrelay skim <owner/repo> [--max-chars 4000] [--tree-only] [--in corpus.json]
+```
+- `trees?recursive=1` (full path/sha/size inventory; `truncated:true` → hint to use `digest`)
+  + `/readme` raw. Returns a tree summary (top-level dirs, extension counts), CI/test/docs/
+  examples/license-file booleans, and a README head with heading-derived install/usage/example
+  booleans. `--in` writes those E-group signals into a corpus row (creates the row if absent).
+  A missing README is expected absence (`readme: null`), never a hard error.
+
+### `read` — 1 REST call per uncached file. Targeted reads, cached forever.
+```
+ghrelay read <owner/repo> <paths...> [--ref SHA] [--max-chars 6000]
+```
+- Content-addressed: once a tree is cached for a resolved ref, path→blob-sha is local and the
+  blob is immutable — repeat reads of the same file are free (`cached:true`). Multi-path reads
+  are serialized; each result is `ok:true` even for a missing path
+  (`{content:null, reason:'not in tree', nearest:[...]}` — up to 5 nearest-name suggestions).
+  A genuinely hard error (bad ref, directory path) aborts the whole call.
+
+### `digest` — 1 tarball request (or 0-quota blobless clone). GATE 4, the full read.
+```
+ghrelay digest <owner/repo> [--ref SHA] [--include glob] [--exclude glob]
+       [--max-tokens 20000] [--out digest.md] [--list]
+```
+- Pins ref→commit SHA once (reused from `skim`), fetches a tarball snapshot (cached forever
+  by that SHA) — or, if the tarball fails and `git` is available, a blobless shallow clone.
+  Filters out `.git`, lockfiles, binaries, minified files, and anything >1MB by default;
+  `--include`/`--exclude` narrow further. Produces gitingest-style markdown (tree + fenced
+  per-file sections), hard-stopped under `--max-tokens` with a steering message naming how
+  many files/tokens were dropped and how to narrow. `--list` dry-runs the inclusion set (paths
+  only, no content, no `--out` write). **Over MCP, `out` is ALWAYS required** — a whole-repo
+  digest never transits the model inline, even in `--list` mode.
+
+### `budget` — free (+1 free GET /rate_limit). Pool visibility.
+```
+ghrelay budget [--forecast 'enrich:2,skim:8,digest:3']
+```
+- Reports every pool (GraphQL points, REST core/search, ecosyste.ms, OSS Insight, grep.app
+  breaker state) exactly as last recorded, refreshed by one free `/rate_limit` call every
+  invocation. `--forecast 'command:count,...'` answers "can I afford this plan right now" —
+  `affordable:false` means at least one pool would go negative; an unobserved pool reports
+  `remaining:null` rather than fabricating a number.
+
+### `doctor` — free (or <15s live). Self-diagnosis — run this FIRST when something looks off.
+```
+ghrelay doctor [--offline]
+```
+- ALWAYS returns `ok:true` with `{healthy, checks[], summary}` — a failing check is DATA, never
+  a thrown error. Checks: token present + valid (with a PAT-expiry nag inside 7 days), GraphQL
+  round-trip, ecosyste.ms/deps.dev reachability, cache dir writable, `git` binary presence, and
+  a `starredAt` feature probe (this API was reported admin-restricted 2026-06-30 — doctor tells
+  you live whether it's currently available, since F-group scoring degrades gracefully either
+  way). `--offline` skips the 3 live network checks but still resolves the token locally.
+
+### `cache` — free, local. Inspect or reclaim `~/.ghrelay`.
+```
+ghrelay cache stats
+ghrelay cache clear --confirm
+ghrelay cache gc [--older-than 30d]
+```
+- `stats`: etag/blob/tree/tarball(/corpora, if this is the true default root) counts + byte
+  sizes. `clear` wipes everything except `budget.json` (rate-limit state, not a content cache)
+  — refuses without `--confirm` (`CONFIRMATION_REQUIRED`, zero deletion attempted). `gc` prunes
+  etags older than `--older-than` (default 30d) plus tarballs and now-orphaned etag bodies.
+
+### Roadmap (v0.1 milestone B — registry-listed, not yet implemented)
+
+- **`plan`** — validate/probe query shards before spending anything, auto-expand >1,000-result
+  slices into `created:`/`stars:` shards. For now, write and validate shards by hand (see
+  GATE 0 above).
+- **`code`** — grep.app code-token/regex evidence lane (`INVALID_INPUT` on natural-language
+  input — it needs actual code tokens/regex, not intent).
+- **`health`** — GATE 3 forensics consolidation: issue close-latency, ClickHouse lifetime
+  star-velocity histograms (burstiness, viral-corroboration), `/contributors` bus factor;
+  auto-recomputes C/D/F and coverage. Calling any of these returns `UNKNOWN_COMMAND` with a
+  "not yet implemented" message — don't script against them yet.
+
+---
+
+## Corpus / budget / doctor workflow notes
+
+- A corpus file (`corpus.json`) is the shared state across a whole research session:
+  `search`/`batch`/`hydrate` build it, `enrich` deepens it in place, `rank` reads it read-only.
+  Re-running any writer against the same `--out`/`--in` path merges fresh-wins — safe to top up
+  incrementally rather than starting over.
+- Run `doctor` first whenever a call errors oddly or returns unexpectedly empty — it tells you
+  what's actually wrong (token, network, cache dir) instead of leaving you to guess.
+- Check `budget` before a big `batch`/`enrich`/`digest` sweep, and `--forecast` a plan you're
+  unsure you can afford — GraphQL and REST core pools are separate, so a `search`-heavy session
+  can starve `digest`'s REST-core budget without you noticing.
+
+---
+
+## Error codes
+
+The `error` object is always `{code, message}` plus, when relevant, `hint`, `status` (upstream
+HTTP status), and `retryAfterMs`. **Read `retryAfterMs` and back off by exactly that much —
+never guess a shorter wait.**
+
+- `INVALID_INPUT` — bad flag/shape (empty query, malformed owner/repo id, bad `--stars` range).
+  No network call spent.
+- `AUTH_FAILED` — terminal; create a zero-permission fine-grained PAT (`GH_TOKEN`/`GITHUB_TOKEN`,
+  or have `gh auth token` resolve one) — github-relay deliberately never degrades to 60/hr
+  unauthenticated access.
+- `RATE_LIMITED` — read `error.retryAfterMs` and wait exactly that long; `batch` handles this
+  pacing for you automatically mid-run.
+- `NOT_FOUND` — the repo/resource doesn't exist or isn't visible to your token.
+- `QUERY_TOO_COMPLEX` — >256 chars or >5 `AND`/`OR`/`NOT` operators; split into `batch` shards
+  (the hint suggests how).
+- `RESULT_CAP` — the search hit GitHub's 1,000-result cap; the hint includes a ready-made
+  `stars:`/`created:` shard split.
+- `ABUSE_DETECTED` — GitHub's secondary rate limit; back off and retry serialized, not in a burst.
+- `SOURCE_DOWN` — a no-SLA third party (ecosyste.ms, deps.dev, ClickHouse, OSS Insight, grep.app)
+  is unreachable; the affected signal degrades to `nodata` — other signals still apply, and
+  `coverage` reflects the gap honestly.
+- `CONFIRMATION_REQUIRED` — a destructive op (`cache clear`) needs `--confirm`; nothing was
+  touched.
+- `UNKNOWN_COMMAND` — a name outside the registry, OR a registered-but-not-yet-implemented
+  command (`plan`/`code`/`health` — see Roadmap above).
+- `FETCH_FAILED` — a generic transport/parse failure not covered by a more specific code.
+
+---
+
+## Setup
+
+Requires a zero-permission fine-grained GitHub PAT — it can read nothing private, so a
+non-expiring one is fine (no safety tradeoff, just less friction). Resolution order:
+`GH_TOKEN`/`GITHUB_TOKEN` env → `gh auth token` shell-out → loud `AUTH_FAILED` with a hint if
+neither resolves. Run `ghrelay doctor` after setup to confirm everything (token, pools, cache
+dir, `git` presence) is reachable.
