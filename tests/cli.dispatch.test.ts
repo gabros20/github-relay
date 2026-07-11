@@ -222,6 +222,20 @@ const SHA = 'a'.repeat(40);
 function fakeGhRestForExtraction(): Sources['ghRest'] {
   return {
     get: async (path: string) => {
+      if (path === '/rate_limit') {
+        return {
+          status: 200,
+          headers: new Headers(),
+          body: {
+            resources: {
+              core: { limit: 5000, remaining: 4999, reset: 2000000000 },
+              search: { limit: 30, remaining: 30, reset: 2000000000 },
+              graphql: { limit: 5000, remaining: 4999, reset: 2000000000 },
+            },
+          },
+          etag: null,
+        };
+      }
       if (path.includes('/commits/')) {
         return {
           status: 200,
@@ -344,6 +358,140 @@ describe('dispatch — digest (task 6)', () => {
     const { stdout, exitCode } = await run(
       ['digest', 'not-a-repo', '--compact'],
       sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('dispatch — budget (task 7)', () => {
+  test('a valid budget call → ok:true, exit 0', async () => {
+    const sources = fakeSources();
+    sources.ghRest = fakeGhRestForExtraction();
+    const { stdout, exitCode } = await run(['budget', '--compact'], sources, '', createCache(dir));
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.command).toBe('budget');
+  });
+
+  test('an unsupported --forecast command → INVALID_INPUT, exit 1', async () => {
+    const sources = fakeSources();
+    sources.ghRest = fakeGhRestForExtraction();
+    const { stdout, exitCode } = await run(
+      ['budget', '--forecast', 'health:1', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('dispatch — doctor (task 7)', () => {
+  test('doctor always exits 0 with ok:true, even when every underlying check fails', async () => {
+    const sources: Sources = {
+      ghGraphql: {
+        graphql: async () => {
+          throw new Error('graphql down');
+        },
+        lastRateLimit: () => null,
+        batchRepositories: async () => [],
+      },
+      ghRest: {
+        get: async () => {
+          throw new Error('rest down');
+        },
+        tarballUrl: async () => {
+          throw new Error('n/a');
+        },
+        downloadTarball: async () => {
+          throw new Error('n/a');
+        },
+      },
+      ecosystems: {
+        repo: async () => {
+          throw new Error('down');
+        },
+        bulkLookupPackages: async () => [],
+      },
+      depsdev: {
+        project: async () => {
+          throw new Error('down');
+        },
+        projectPackageVersions: async () => {
+          throw new Error('down');
+        },
+        dependents: async () => {
+          throw new Error('down');
+        },
+      },
+    };
+    const { stdout, exitCode } = await run(['doctor', '--compact'], sources, '', createCache(dir));
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<{ healthy: boolean }>;
+    expect(envelope.ok).toBe(true);
+    if (!envelope.ok) throw new Error('expected success');
+    expect(envelope.data.healthy).toBe(false);
+  });
+
+  test('doctor --offline exits 0 with ok:true, touching zero network', async () => {
+    const sources = fakeSources();
+    sources.ghRest = fakeGhRestForExtraction();
+    const { stdout, exitCode } = await run(
+      ['doctor', '--offline', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.command).toBe('doctor');
+  });
+});
+
+describe('dispatch — cache (task 7)', () => {
+  test('cache stats → ok:true, exit 0, zero network', async () => {
+    const { stdout, exitCode } = await run(
+      ['cache', 'stats', '--compact'],
+      fakeSources(),
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.command).toBe('cache');
+  });
+
+  test('cache clear without --confirm → CONFIRMATION_REQUIRED, exit 1', async () => {
+    const { stdout, exitCode } = await run(
+      ['cache', 'clear', '--compact'],
+      fakeSources(),
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('CONFIRMATION_REQUIRED');
+  });
+
+  test('an unknown cache subcommand → INVALID_INPUT, exit 1', async () => {
+    const { stdout, exitCode } = await run(
+      ['cache', 'nope', '--compact'],
+      fakeSources(),
       '',
       createCache(dir),
     );

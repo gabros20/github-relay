@@ -5,7 +5,10 @@
 // process.exit itself — main() below owns that translation.
 import { type Cache, createCache } from './cache/index.ts';
 import { batchOptsFromArgs, runBatch } from './commands/batch.ts';
+import { budgetOptsFromArgs, runBudget } from './commands/budget.ts';
+import { cacheOptsFromArgs, runCache } from './commands/cache.ts';
 import { digestOptsFromArgs, runDigest } from './commands/digest.ts';
+import { doctorOptsFromArgs, runDoctor } from './commands/doctor.ts';
 import { enrichOptsFromArgs, runEnrich } from './commands/enrich.ts';
 import { hydrateOptsFromArgs, runHydrate } from './commands/hydrate.ts';
 import { rankOptsFromArgs, runRank } from './commands/rank.ts';
@@ -142,13 +145,13 @@ function helpText(): string {
 
 /**
  * Dispatch a parsed command against Sources. search/batch/hydrate (task 4),
- * enrich/rank (task 5), and skim/read/digest (task 6) are wired to their
- * runners, each wrapped in `guard()` so an EngineError becomes a per-code
- * envelope. Every other registered command still falls through to a clear
- * "not yet implemented" envelope (tasks 7-13). A name outside the registry
- * gets the same UNKNOWN_COMMAND code with a different message, so the CLI's
- * exit-code rule (`error.code === 'UNKNOWN_COMMAND' → exit 2`) covers both
- * cases uniformly.
+ * enrich/rank (task 5), skim/read/digest (task 6), and budget/doctor/cache
+ * (task 7) are wired to their runners, each wrapped in `guard()` so an
+ * EngineError becomes a per-code envelope. Every other registered command
+ * still falls through to a clear "not yet implemented" envelope (tasks
+ * 8-13). A name outside the registry gets the same UNKNOWN_COMMAND code with
+ * a different message, so the CLI's exit-code rule (`error.code ===
+ * 'UNKNOWN_COMMAND' → exit 2`) covers both cases uniformly.
  */
 export function dispatch(
   parsed: ParsedArgs,
@@ -186,6 +189,16 @@ export function dispatch(
       return guard('read', () => runRead(sources, cache, readOptsFromArgs(parsed)));
     case 'digest':
       return guard('digest', () => runDigest(sources, cache, digestOptsFromArgs(parsed)));
+    case 'budget':
+      return guard('budget', () => runBudget(sources, cache, budgetOptsFromArgs(parsed)));
+    case 'doctor':
+      // doctor's own always-ok:true contract lives inside runDoctor (a failing
+      // check is data, not a throw) — guard() here just wraps it like every
+      // other command; there's no special case needed at dispatch level.
+      return guard('doctor', () => runDoctor(sources, cache, doctorOptsFromArgs(parsed)));
+    case 'cache':
+      // cache is fully offline, like rank — no Sources involved.
+      return guard('cache', () => Promise.resolve(runCache(cache, cacheOptsFromArgs(parsed))));
     default:
       return Promise.resolve(
         err(
