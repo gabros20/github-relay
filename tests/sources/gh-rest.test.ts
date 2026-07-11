@@ -348,6 +348,41 @@ describe('downloadTarball — incremental streaming to disk (IMPORTANT 2)', () =
     expect(err).toBeInstanceOf(EngineError);
     expect(sink.writes.length).toBeLessThan(3);
   });
+
+  // Item 11 (final fix pass): a mid-stream size-guard abort must cancel the
+  // body reader, not just stop reading from it — an uncancelled reader leaves
+  // the underlying fetch response body (and its connection) open indefinitely.
+  test('mid-stream size-guard abort cancels the underlying body reader', async () => {
+    const codeload = 'https://codeload.github.com/a/b/tar';
+    const chunks = [
+      new Uint8Array([1, 2, 3]),
+      new Uint8Array([4, 5, 6]),
+      new Uint8Array([7, 8, 9]),
+    ];
+    let i = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(ctrl) {
+        if (i < chunks.length) ctrl.enqueue(chunks[i++] as Uint8Array);
+        else ctrl.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { fetchImpl } = routingFetch((u) =>
+      u.startsWith('https://api.github.com')
+        ? new Response(null, { status: 302, headers: { location: codeload } })
+        : new Response(body, { status: 200 }),
+    );
+    const sink = recordingSink();
+    const rest = createGhRest({ fetchImpl, getToken, createSink: sink.createSink });
+    const err = (await rest
+      .downloadTarball('a', 'b', 'main', { out: '/dev/null', maxBytes: 4 })
+      .catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    expect(cancelled).toBe(true);
+  });
 });
 
 describe('downloadTarball — second-hop host enforcement (IMPORTANT 4)', () => {

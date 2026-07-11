@@ -291,8 +291,13 @@ export function createGhRest(deps: GhRestDeps): GhRest {
         await sink.write(value);
       }
     } catch (e) {
-      // A close() failure here is secondary noise once the loop has already
-      // failed for a real reason — never let it clobber that original error.
+      // A close()/cancel() failure here is secondary noise once the loop has
+      // already failed for a real reason — never let it clobber that original
+      // error. The reader must be cancelled (not just abandoned) on every
+      // failure path, including our own size-guard abort: an uncancelled
+      // reader leaves the underlying fetch response body — and its
+      // connection — open indefinitely.
+      await reader.cancel().catch(() => {});
       await sink?.close().catch(() => {});
       if (e instanceof EngineError) throw e;
       // A raw stream failure (ENOSPC/EACCES/a bad path — surfaced through
