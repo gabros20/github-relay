@@ -475,11 +475,17 @@ describe('dispatch — cache (task 7)', () => {
   });
 
   test('cache clear without --confirm → CONFIRMATION_REQUIRED, exit 1', async () => {
+    // Prime the root with the ownership marker (fix wave 1) — a real prior
+    // cache-layer write, as any normal ghrelay session would have made —
+    // so the CONFIRMATION_REQUIRED gate, not the ownership guard, is what
+    // this test is exercising.
+    const cache = createCache(dir);
+    cache.blobs.put('a'.repeat(40), 'x');
     const { stdout, exitCode } = await run(
       ['cache', 'clear', '--compact'],
       fakeSources(),
       '',
-      createCache(dir),
+      cache,
     );
     expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;

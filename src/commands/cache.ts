@@ -11,7 +11,15 @@
 import { existsSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Cache, EtagRecord } from '../cache/index.ts';
-import { load, resolveCacheRoot, save } from '../cache/index.ts';
+import {
+  MARKER_FILENAME,
+  ensureMarker,
+  hasMarker,
+  load,
+  looksLikeExistingGhrelayRoot,
+  resolveCacheRoot,
+  save,
+} from '../cache/index.ts';
 import type { ParsedArgs } from '../cli.ts';
 import { EngineError } from '../types.ts';
 
@@ -105,8 +113,32 @@ function wipeDir(dir: string): void {
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 }
 
+/**
+ * The ownership guard (fix wave 1): refuses to let clear/gc touch a
+ * directory that doesn't demonstrably belong to us — a misconfigured
+ * `GHRELAY_CACHE_DIR` pointed at a real, unrelated directory (one that only
+ * happens to contain folders NAMED blobs/trees/corpora) must never be
+ * silently wiped. A marked root always passes. An unmarked root gets ONE
+ * chance at adoption: if it carries our own schema-specific artifacts from
+ * before this guard existed (see marker.ts), it's stamped and allowed
+ * through; otherwise deletion is refused outright, before the --confirm gate
+ * even runs.
+ */
+function assertDeletable(cache: Cache, now: () => number): void {
+  if (hasMarker(cache.paths.root)) return;
+  if (looksLikeExistingGhrelayRoot(cache.paths)) {
+    ensureMarker(cache.paths.root, now); // one-time adoption of a pre-marker-era root
+    return;
+  }
+  throw new EngineError(
+    'INVALID_INPUT',
+    `${cache.paths.root} doesn't look like a github-relay cache (no ${MARKER_FILENAME} marker and no recognizable store files) — refusing to delete anything here. If this IS your ghrelay cache, run any command that writes to it (e.g. \`ghrelay budget\`) once to initialize it, or double-check GHRELAY_CACHE_DIR isn't pointed at the wrong directory.`,
+  );
+}
+
 /** Wipes only stores rooted under THIS cache instance's resolved root — never an arbitrary `--out` corpus path, which lives outside cache.paths entirely and is never touched here. `budget.json` is deliberately spared: it's session rate-limit state, not a content cache. */
-function runClear(cache: Cache, opts: CacheOpts): CacheClearResult {
+function runClear(cache: Cache, opts: CacheOpts, now: () => number): CacheClearResult {
+  assertDeletable(cache, now);
   if (!opts.confirm) {
     throw new EngineError(
       'CONFIRMATION_REQUIRED',
@@ -151,6 +183,7 @@ function gcOrphanedEtagBodies(cache: Cache): string[] {
 
 /** Age-based prune, run in an order where pruning etags first is what MAKES a body orphaned (a stale etag entry aged out → its body is now unreferenced → collected in the same pass). */
 function runGc(cache: Cache, opts: CacheOpts, now: () => number): CacheGcResult {
+  assertDeletable(cache, now);
   const maxAgeMs = parseOlderThan(opts.olderThan);
   const { pruned } = cache.etags.prune(maxAgeMs, now);
   const { removed: tarballsRemoved } = cache.tarballs.gc(maxAgeMs, now);
@@ -164,7 +197,7 @@ export function runCache(cache: Cache, opts: CacheOpts, deps: CacheDeps = {}): C
     case 'stats':
       return runStats(cache, deps);
     case 'clear':
-      return runClear(cache, opts);
+      return runClear(cache, opts, now);
     case 'gc':
       return runGc(cache, opts, now);
     default:

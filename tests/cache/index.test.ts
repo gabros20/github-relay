@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCorpus, loadCorpus, saveCorpus } from '../../src/cache/corpus.ts';
 import { createCache } from '../../src/cache/index.ts';
+import { hasMarker } from '../../src/cache/marker.ts';
 
 let dir: string;
 
@@ -89,5 +90,69 @@ describe('createCache — wires every store to the resolved root', () => {
     const corpusPath = join(dir, 'anywhere', 'my-corpus.json');
     saveCorpus(corpusPath, createCorpus('intent'));
     expect(loadCorpus(corpusPath).intent).toBe('intent');
+  });
+});
+
+describe('createCache — every store write stamps the ownership marker (fix wave 1)', () => {
+  test('a fresh root has no marker before any store write', () => {
+    createCache(dir);
+    expect(hasMarker(dir)).toBe(false);
+  });
+
+  test('blobs.put stamps the marker', () => {
+    const cache = createCache(dir);
+    cache.blobs.put('a'.repeat(40), 'content');
+    expect(hasMarker(dir)).toBe(true);
+  });
+
+  test('trees.put stamps the marker', () => {
+    const cache = createCache(dir);
+    cache.trees.put('b'.repeat(40), []);
+    expect(hasMarker(dir)).toBe(true);
+  });
+
+  test('tarballs.put stamps the marker', () => {
+    const cache = createCache(dir);
+    cache.tarballs.put('c'.repeat(40), '/tmp/x.tar.gz');
+    expect(hasMarker(dir)).toBe(true);
+  });
+
+  test('budget.updatePool stamps the marker', () => {
+    const cache = createCache(dir);
+    cache.budget.updatePool('restCore', { remaining: 1, resetAt: '2026-01-01T00:00:00Z' });
+    expect(hasMarker(dir)).toBe(true);
+  });
+
+  test('budget.save stamps the marker', () => {
+    const cache = createCache(dir);
+    cache.budget.save({ learnedCeilings: {} });
+    expect(hasMarker(dir)).toBe(true);
+  });
+
+  test('budget.updateLearnedCeiling stamps the marker', () => {
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('light', 25);
+    expect(hasMarker(dir)).toBe(true);
+  });
+
+  test('budget.updateGrepAppBreaker stamps the marker', () => {
+    const cache = createCache(dir);
+    cache.budget.updateGrepAppBreaker({ breakerState: 'closed' });
+    expect(hasMarker(dir)).toBe(true);
+  });
+
+  test('etags.set stamps the marker', () => {
+    const cache = createCache(dir);
+    cache.etags.set('https://api.github.com/x', 'W/"1"', 'body');
+    expect(hasMarker(dir)).toBe(true);
+  });
+
+  test('a read-only call (get/has/load) never stamps the marker on its own', () => {
+    const cache = createCache(dir);
+    cache.blobs.has('a'.repeat(40));
+    cache.blobs.get('a'.repeat(40));
+    cache.budget.load();
+    cache.etags.get('https://api.github.com/x');
+    expect(hasMarker(dir)).toBe(false);
   });
 });

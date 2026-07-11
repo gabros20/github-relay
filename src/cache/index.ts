@@ -6,6 +6,7 @@ import * as budgetStore from './budget.ts';
 import type { Budget, GraphqlPoints, GrepAppBreaker, RateWindow, SimplePool } from './budget.ts';
 import type { EtagRecord } from './etags.ts';
 import * as etagsStore from './etags.ts';
+import { ensureMarker } from './marker.ts';
 import type { CachePaths } from './paths.ts';
 import { resolveCachePaths } from './paths.ts';
 import type { TarballRecord } from './tarballs.ts';
@@ -21,6 +22,7 @@ export * from './tarballs.ts';
 export * from './budget.ts';
 export * from './etags.ts';
 export * from './corpus.ts';
+export * from './marker.ts';
 
 import { getBlob, hasBlob, putBlob } from './blobs.ts';
 
@@ -60,43 +62,73 @@ export interface Cache {
   };
 }
 
-/** Resolves the cache root once (env override / `~/.ghrelay`) and binds every store to it. */
+/**
+ * Resolves the cache root once (env override / `~/.ghrelay`) and binds every
+ * store to it. Every WRITE below calls `ensureMarker` first (cheap — a no-op
+ * once the marker exists) so a fresh root gets stamped the moment anything is
+ * actually written through this Cache — `cache clear`/`gc` then simply
+ * require that marker before deleting anything (fix wave 1). Read-only
+ * accessors (get/has/load) deliberately do NOT stamp — a root nobody has
+ * written to yet should stay unmarked.
+ */
 export function createCache(rootOverride?: string): Cache {
   const paths = resolveCachePaths(rootOverride);
+  const mark = (now?: () => number) => ensureMarker(paths.root, now);
 
   return {
     paths,
     etags: {
       get: (url) => etagsStore.getEtag(paths.etagsFile, url),
-      set: (url, etag, body, now) =>
-        etagsStore.setEtag(paths.etagsFile, paths.blobsDir, url, etag, body, now),
+      set: (url, etag, body, now) => {
+        mark(now);
+        return etagsStore.setEtag(paths.etagsFile, paths.blobsDir, url, etag, body, now);
+      },
       getBody: (bodyHash) => etagsStore.getCachedBody(paths.blobsDir, bodyHash),
       prune: (maxAgeMs, now) => etagsStore.pruneEtags(paths.etagsFile, maxAgeMs, now),
     },
     blobs: {
       has: (sha) => hasBlob(paths.blobsDir, sha),
       get: (sha) => getBlob(paths.blobsDir, sha),
-      put: (sha, content) => putBlob(paths.blobsDir, sha, content),
+      put: (sha, content) => {
+        mark();
+        putBlob(paths.blobsDir, sha, content);
+      },
     },
     trees: {
       has: (commitSha) => treesStore.hasTree(paths.treesDir, commitSha),
       get: (commitSha) => treesStore.getTree(paths.treesDir, commitSha),
-      put: (commitSha, entries) => treesStore.putTree(paths.treesDir, commitSha, entries),
+      put: (commitSha, entries) => {
+        mark();
+        treesStore.putTree(paths.treesDir, commitSha, entries);
+      },
     },
     tarballs: {
       has: (commitSha) => tarballsStore.hasTarball(paths.tarballsDir, commitSha),
       get: (commitSha) => tarballsStore.getTarball(paths.tarballsDir, commitSha),
-      put: (commitSha, filePath, now) =>
-        tarballsStore.putTarball(paths.tarballsDir, commitSha, filePath, now),
+      put: (commitSha, filePath, now) => {
+        mark(now);
+        tarballsStore.putTarball(paths.tarballsDir, commitSha, filePath, now);
+      },
       gc: (maxAgeMs, now) => tarballsStore.gcTarballs(paths.tarballsDir, maxAgeMs, now),
     },
     budget: {
       load: () => budgetStore.loadBudget(paths.budgetFile),
-      save: (budget) => budgetStore.saveBudget(paths.budgetFile, budget),
-      updatePool: (pool, state) => budgetStore.updatePool(paths.budgetFile, pool, state),
-      updateGrepAppBreaker: (state) => budgetStore.updateGrepAppBreaker(paths.budgetFile, state),
-      updateLearnedCeiling: (fragmentWeight, batchSize) =>
-        budgetStore.updateLearnedCeiling(paths.budgetFile, fragmentWeight, batchSize),
+      save: (budget) => {
+        mark();
+        budgetStore.saveBudget(paths.budgetFile, budget);
+      },
+      updatePool: (pool, state) => {
+        mark();
+        return budgetStore.updatePool(paths.budgetFile, pool, state);
+      },
+      updateGrepAppBreaker: (state) => {
+        mark();
+        return budgetStore.updateGrepAppBreaker(paths.budgetFile, state);
+      },
+      updateLearnedCeiling: (fragmentWeight, batchSize) => {
+        mark();
+        return budgetStore.updateLearnedCeiling(paths.budgetFile, fragmentWeight, batchSize);
+      },
     },
   };
 }

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCache } from '../../src/cache/index.ts';
+import { MARKER_FILENAME, hasMarker } from '../../src/cache/marker.ts';
 import { parseArgs } from '../../src/cli.ts';
 import {
   type CacheClearResult,
@@ -45,6 +46,100 @@ describe('runCache — unknown subcommand', () => {
     const cache = createCache(dir);
     expect(() => runCache(cache, { subcommand: 'wat' })).toThrow(EngineError);
     expect(() => runCache(cache, {})).toThrow(EngineError);
+  });
+});
+
+describe('runCache — cache-root ownership guard (fix wave 1: GHRELAY_CACHE_DIR misconfiguration)', () => {
+  test('clear against an unmarked, unrecognizable root refuses with INVALID_INPUT and touches nothing', () => {
+    const cache = createCache(dir);
+    writeFileSync(join(dir, 'unrelated.txt'), 'not ours');
+    let thrown: unknown;
+    try {
+      runCache(cache, { subcommand: 'clear', confirm: true });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(EngineError);
+    expect((thrown as EngineError).code).toBe('INVALID_INPUT');
+    expect(existsSync(join(dir, 'unrelated.txt'))).toBe(true);
+    expect(hasMarker(dir)).toBe(false);
+  });
+
+  test('gc against an unmarked, unrecognizable root refuses with INVALID_INPUT', () => {
+    const cache = createCache(dir);
+    expect(() => runCache(cache, { subcommand: 'gc' })).toThrow(EngineError);
+    try {
+      runCache(cache, { subcommand: 'gc' });
+    } catch (e) {
+      expect((e as EngineError).code).toBe('INVALID_INPUT');
+    }
+  });
+
+  test('the reviewer repro: GHRELAY_CACHE_DIR pointed at a real, unrelated directory with folders named blobs/trees/corpora — clear --confirm must NOT delete their contents', () => {
+    const cache = createCache(dir);
+    const blobsLike = join(dir, 'blobs');
+    const treesLike = join(dir, 'trees');
+    const corporaLike = join(dir, 'corpora');
+    for (const d of [blobsLike, treesLike, corporaLike]) {
+      mkdirSync(d, { recursive: true });
+    }
+    writeFileSync(join(blobsLike, 'family-photo.png'), 'binary-ish');
+    writeFileSync(join(treesLike, 'genealogy.txt'), 'grandpa');
+    writeFileSync(join(corporaLike, 'quarterly-report.md'), '# Q3 numbers');
+
+    let thrown: unknown;
+    try {
+      runCache(cache, { subcommand: 'clear', confirm: true });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(EngineError);
+    expect((thrown as EngineError).code).toBe('INVALID_INPUT');
+    expect(existsSync(join(blobsLike, 'family-photo.png'))).toBe(true);
+    expect(existsSync(join(treesLike, 'genealogy.txt'))).toBe(true);
+    expect(existsSync(join(corporaLike, 'quarterly-report.md'))).toBe(true);
+  });
+
+  test('clear against a marked root (a real prior cache-layer write) succeeds normally', () => {
+    const cache = createCache(dir);
+    cache.blobs.put('a'.repeat(40), 'x');
+    const result = runCache(cache, { subcommand: 'clear', confirm: true }) as CacheClearResult;
+    expect(result.cleared).toContain('blobs');
+  });
+
+  test('gc against a marked root succeeds normally', () => {
+    const cache = createCache(dir);
+    cache.etags.set('https://api.github.com/x', '"e1"', 'body');
+    const result = runCache(cache, { subcommand: 'gc' }) as CacheGcResult;
+    expect(result.etagsPruned).toBe(0);
+  });
+
+  test('one-time adoption: a pre-marker-era root (has our budget.json shape but no marker file) is recognized and clear/gc proceed, stamping the marker', () => {
+    const cache = createCache(dir);
+    // Simulate a root populated by a github-relay version that predates this
+    // guard: our own budget.json shape exists, but no .ghrelay marker yet —
+    // NOT written through cache.budget (which would already stamp it).
+    writeFileSync(cache.paths.budgetFile, '{"learnedCeilings":{}}');
+    expect(hasMarker(dir)).toBe(false);
+
+    const result = runCache(cache, { subcommand: 'gc' }) as CacheGcResult;
+    expect(result.etagsPruned).toBe(0);
+    expect(hasMarker(dir)).toBe(true); // adopted
+  });
+
+  test('stats never refuses and never adopts/writes the marker for a markerless root — it stays read-only', () => {
+    const cache = createCache(dir);
+    writeFileSync(join(dir, 'unrelated.txt'), 'not ours');
+    expect(() => runCache(cache, { subcommand: 'stats' })).not.toThrow();
+    expect(hasMarker(dir)).toBe(false);
+  });
+
+  test('the marker file itself never shows up in blobs/etags/trees/tarballs stats counts', () => {
+    const cache = createCache(dir);
+    cache.blobs.put('a'.repeat(40), 'x'); // also stamps MARKER_FILENAME at the root, not inside blobsDir
+    expect(existsSync(join(dir, MARKER_FILENAME))).toBe(true);
+    const stats = runCache(cache, { subcommand: 'stats' }) as CacheStatsResult;
+    expect(stats.blobs.count).toBe(1);
   });
 });
 
@@ -148,6 +243,7 @@ describe('runCache clear', () => {
 
   test('never touches an arbitrary --out corpus.json living outside the cache root', () => {
     const cache = createCache(dir);
+    cache.blobs.put('a'.repeat(40), 'x'); // stamps the ownership marker (fix wave 1) so clear is allowed
     const outsideCorpus = join(dir, '..', 'somewhere-else-corpus.json');
     writeFileSync(outsideCorpus, '{"schema":"github-relay/corpus@1"}');
     try {
@@ -163,13 +259,15 @@ describe('runCache clear', () => {
 describe('runCache gc', () => {
   test('--older-than accepts 30d/12h/90m forms', () => {
     const cache = createCache(dir);
+    cache.blobs.put('a'.repeat(40), 'x'); // stamps the ownership marker (fix wave 1) so gc is allowed
     expect(() => runCache(cache, { subcommand: 'gc', olderThan: '30d' })).not.toThrow();
     expect(() => runCache(cache, { subcommand: 'gc', olderThan: '12h' })).not.toThrow();
     expect(() => runCache(cache, { subcommand: 'gc', olderThan: '90m' })).not.toThrow();
   });
 
-  test('garbage --older-than is INVALID_INPUT', () => {
+  test('garbage --older-than is INVALID_INPUT (on a marked root, so the duration parse is what actually fires)', () => {
     const cache = createCache(dir);
+    cache.blobs.put('a'.repeat(40), 'x');
     expect(() => runCache(cache, { subcommand: 'gc', olderThan: 'soon' })).toThrow(EngineError);
     expect(() => runCache(cache, { subcommand: 'gc', olderThan: '30' })).toThrow(EngineError);
   });
