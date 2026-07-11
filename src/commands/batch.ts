@@ -4,8 +4,8 @@
 // RATE_LIMITED retryAfterMs REPLACES that delay, continue-on-error with a
 // perQuery[] ledger, cross-query dedupe by full_name, --out merges
 // (incremental top-up). `--dry-run` validates every query's shape offline —
-// zero network — using the same 256-char / 5-operator limits `plan` (task 9)
-// will apply before spending a probe.
+// zero network — using the same 256-char / 5-operator limits (_shared.ts's
+// validateQuerySyntax) `plan` also applies before spending a probe.
 import { readFileSync } from 'node:fs';
 import { mergeCorpus, saveCorpus } from '../cache/corpus.ts';
 import { CORPUS_SCHEMA, type Cache, type Corpus, type CorpusRepo } from '../cache/index.ts';
@@ -17,15 +17,14 @@ import { EngineError } from '../types.ts';
 import {
   loadCorpusOrEmpty,
   normalizeRepoNode,
+  parseQueryLines,
   searchRepositories,
   updateBudgetFromGraphql,
+  validateQuerySyntax,
 } from './_shared.ts';
 
 const DEFAULT_DELAY_MS = 2000;
 const BATCH_SEARCH_LIMIT = 100;
-const MAX_QUERY_LENGTH = 256;
-const MAX_OPERATORS = 5;
-const OPERATOR_RE = /\b(?:AND|OR|NOT)\b/gi;
 
 export interface BatchOpts {
   file?: string;
@@ -71,33 +70,6 @@ export function batchOptsFromArgs(parsed: ParsedArgs): BatchOpts {
     out: parsed.flags.out?.[0],
     quiet: parsed.bools.has('quiet'),
   };
-}
-
-function parseQueryLines(raw: string): string[] {
-  return raw
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.startsWith('#'));
-}
-
-/** The offline 256-char / 5-operator limits (design §3 item 1) — QUERY_TOO_COMPLEX per query, zero network. */
-function validateQuerySyntax(
-  query: string,
-): { code: 'QUERY_TOO_COMPLEX'; message: string } | undefined {
-  if (query.length > MAX_QUERY_LENGTH) {
-    return {
-      code: 'QUERY_TOO_COMPLEX',
-      message: `query exceeds ${MAX_QUERY_LENGTH} characters (${query.length}); split into smaller shards`,
-    };
-  }
-  const opCount = (query.match(OPERATOR_RE) ?? []).length;
-  if (opCount > MAX_OPERATORS) {
-    return {
-      code: 'QUERY_TOO_COMPLEX',
-      message: `query has ${opCount} AND/OR/NOT operators (max ${MAX_OPERATORS}); split into smaller shards`,
-    };
-  }
-  return undefined;
 }
 
 function toBatchErrorRecord(e: unknown): { code: string; message: string; retryAfterMs?: number } {

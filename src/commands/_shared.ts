@@ -186,6 +186,63 @@ export function updateBudgetFromRestHeaders(
   });
 }
 
+// ── offline query-shape validators (design §3 item 1) ───────────────────────
+// Shared by batch's --dry-run and plan's offline validation (task 9) —
+// exactly one place defines "what makes a search-query slice too complex",
+// so the two commands can never drift out of sync on the 256-char / 5-operator
+// limits GitHub itself would reject with a query-complexity error.
+
+export const MAX_QUERY_LENGTH = 256;
+export const MAX_OPERATORS = 5;
+const OPERATOR_RE = /\b(?:AND|OR|NOT)\b/gi;
+
+/** The offline 256-char / 5-operator limits — QUERY_TOO_COMPLEX per query, zero network. */
+export function validateQuerySyntax(
+  query: string,
+): { code: 'QUERY_TOO_COMPLEX'; message: string } | undefined {
+  if (query.length > MAX_QUERY_LENGTH) {
+    return {
+      code: 'QUERY_TOO_COMPLEX',
+      message: `query exceeds ${MAX_QUERY_LENGTH} characters (${query.length}); split into smaller shards`,
+    };
+  }
+  const opCount = (query.match(OPERATOR_RE) ?? []).length;
+  if (opCount > MAX_OPERATORS) {
+    return {
+      code: 'QUERY_TOO_COMPLEX',
+      message: `query has ${opCount} AND/OR/NOT operators (max ${MAX_OPERATORS}); split into smaller shards`,
+    };
+  }
+  return undefined;
+}
+
+/** Newline-separated query/slice lines: blank lines and `#`-comments skipped, each trimmed. Shared by batch's --file reader and plan's `-` stdin reader. */
+export function parseQueryLines(raw: string): string[] {
+  return raw
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('#'));
+}
+
+// ── GraphQL result-count probe (design §3 item 1, plan --probe) ────────────
+
+const PROBE_DOCUMENT = `query($q: String!) {
+  search(type: REPOSITORY, query: $q, first: 0) {
+    repositoryCount
+  }
+}`;
+
+/** `search(..., first: 0) { repositoryCount }` — 1 GraphQL point, zero nodes. Used by plan --probe to check a slice's result count before deciding whether/how to shard it. */
+export async function probeRepositoryCount(
+  ghGraphql: Pick<GhGraphql, 'graphql'>,
+  q: string,
+): Promise<number> {
+  const data = await ghGraphql.graphql<{ search: { repositoryCount: number } }>(PROBE_DOCUMENT, {
+    q,
+  });
+  return data.search.repositoryCount;
+}
+
 // ── corpus load-or-create ───────────────────────────────────────────────────
 
 /** loadCorpus, but a missing file (expected absence on a first --out write) becomes a fresh corpus instead of throwing. Any other failure (bad JSON, wrong schema) still propagates. */
