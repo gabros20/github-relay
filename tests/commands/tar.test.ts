@@ -22,7 +22,7 @@ function checksum(header: Uint8Array): number {
   return sum;
 }
 
-function tarHeader(fullPath: string, size: number, typeflag: '0' | '5'): Uint8Array {
+function tarHeader(fullPath: string, size: number, typeflag: string): Uint8Array {
   const header = new Uint8Array(512);
   // Split at 100 bytes: name gets the tail, prefix gets everything before it,
   // mirroring real ustar producers (and GitHub's long `owner-repo-sha/` lead).
@@ -124,5 +124,44 @@ describe('parseTar', () => {
 
   test('an empty archive (just the two zero end-blocks) parses to zero entries', () => {
     expect(parseTar(new Uint8Array(1024))).toEqual([]);
+  });
+
+  test('a GNU longname (typeflag L) entry supplies the full path for the entry that follows it, never a silently truncated/wrong one', () => {
+    // GNU tar's long-name extension: an 'L' entry whose CONTENT is the real
+    // path, immediately followed by a real header whose own 100-byte `name`
+    // field is a truncated/placeholder stand-in (GNUtar conventionally
+    // writes something short there, e.g. the tail of the real name).
+    const longPath =
+      'repo-1234567/very/deeply/nested/directory/structure/that/exceeds/the/ustar/name/and/prefix/budget/entirely/so/a/GNU/longname/header/is/required/to/represent/it/correctly/file.ts';
+    const longNameBytes = pad512(new TextEncoder().encode(`${longPath}\0`));
+    const chunks: Uint8Array[] = [
+      tarHeader('././@LongLink', longNameBytes.length, 'L'),
+      longNameBytes,
+      tarHeader('file.ts', 5, '0'), // the header's own name is the wrong, truncated stand-in
+      pad512(new TextEncoder().encode('hello')),
+      new Uint8Array(1024),
+    ];
+    const tar = concat(chunks);
+    const entries = parseTar(tar);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.path).toBe(longPath);
+    expect(new TextDecoder().decode(entries[0]?.content)).toBe('hello');
+  });
+
+  test('an L entry immediately followed by another L entry does not leak a stale long name past a skipped directory', () => {
+    const longPath = 'repo-1234567/a-real-long-name/file.ts';
+    const longNameBytes = pad512(new TextEncoder().encode(`${longPath}\0`));
+    const chunks: Uint8Array[] = [
+      tarHeader('././@LongLink', longNameBytes.length, 'L'),
+      longNameBytes,
+      tarHeader('somedir', 0, '5'), // a directory entry — consumed, never uses the pending long name
+      tarHeader('short.ts', 3, '0'), // a plain, unrelated file right after — must NOT inherit the long name
+      pad512(new TextEncoder().encode('abc')),
+      new Uint8Array(1024),
+    ];
+    const tar = concat(chunks);
+    const entries = parseTar(tar);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.path).toBe('short.ts');
   });
 });
