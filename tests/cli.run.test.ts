@@ -36,20 +36,27 @@ describe('run — unknown command', () => {
   });
 });
 
+// search/batch/hydrate are wired (task 4) — their own envelope/exit-code
+// contract is covered in tests/cli.dispatch.test.ts. Every other registered
+// command still falls through to the "not yet implemented" path here.
+const UNIMPLEMENTED_COMMANDS = commandNames.filter(
+  (name) => name !== 'search' && name !== 'batch' && name !== 'hydrate',
+);
+
 describe('run — registered but unimplemented command', () => {
-  test('search (no adapter wired yet) → UNKNOWN_COMMAND envelope, exit 2, command echoed', async () => {
-    const { stdout, exitCode } = await run(['search'], {});
+  test('enrich (no runner wired yet) → UNKNOWN_COMMAND envelope, exit 2, command echoed', async () => {
+    const { stdout, exitCode } = await run(['enrich'], {});
     expect(exitCode).toBe(2);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
     if (envelope.ok) throw new Error('expected failure');
     expect(envelope.error.code).toBe('UNKNOWN_COMMAND');
-    expect(envelope.command).toBe('search');
+    expect(envelope.command).toBe('enrich');
     expect(envelope.error.message).toContain('not yet implemented');
   });
 
-  test('every registered command currently dispatches to the not-yet-implemented path', async () => {
-    for (const name of commandNames) {
+  test('every still-unimplemented registered command dispatches to the not-yet-implemented path', async () => {
+    for (const name of UNIMPLEMENTED_COMMANDS) {
       const { exitCode } = await run([name], {});
       expect(exitCode).toBe(2);
     }

@@ -3,18 +3,24 @@
 // Parses args, dispatches a command against injected Sources, prints a JSON
 // envelope to stdout. `run()` is pure and testable: it never touches
 // process.exit itself — main() below owns that translation.
+import { type Cache, createCache } from './cache/index.ts';
+import { batchOptsFromArgs, runBatch } from './commands/batch.ts';
+import { hydrateOptsFromArgs, runHydrate } from './commands/hydrate.ts';
 import { commandNames } from './commands/registry.ts';
 import { COMMANDS } from './commands/registry.ts';
+import { guard } from './commands/runners.ts';
+import { runSearch, searchOptsFromArgs } from './commands/search.ts';
 import { shouldRunAsEntry } from './entry.ts';
 import { err, toJson } from './output.ts';
 import { type Sources, createSources } from './sources/index.ts';
 import type { Envelope } from './types.ts';
 
 // ── Sources ──────────────────────────────────────────────────────────────
-// The injectable adapter bag is now the concrete interface from
+// The injectable adapter bag is the concrete interface from
 // src/sources/index.ts (gh-graphql/gh-rest/ecosystems/depsdev). Command
-// runners narrow what they need from it; dispatch is still stubbed here —
-// command wiring lands in tasks 4-7.
+// runners narrow what they need from it. `search`/`batch`/`hydrate` are wired
+// below (task 4); the rest still fall through to "not yet implemented"
+// (tasks 5-13).
 
 // ── Flag tables ──────────────────────────────────────────────────────────
 // Value flags consume the following token (repeatable — each occurrence
@@ -130,17 +136,19 @@ function helpText(): string {
 // ── dispatch ─────────────────────────────────────────────────────────────
 
 /**
- * Dispatch a parsed command against Sources. This scaffold wires NO command
- * logic yet (adapters land in task 2+) — every registered command falls
- * through to a clear "not yet implemented" envelope. A name outside the
- * registry gets the same UNKNOWN_COMMAND code with a different message, so
- * the CLI's exit-code rule (`error.code === 'UNKNOWN_COMMAND' → exit 2`)
- * covers both cases uniformly.
+ * Dispatch a parsed command against Sources. `search`/`batch`/`hydrate` are
+ * wired to their runners (task 4), each wrapped in `guard()` so an
+ * EngineError becomes a per-code envelope. Every other registered command
+ * still falls through to a clear "not yet implemented" envelope (tasks
+ * 5-13). A name outside the registry gets the same UNKNOWN_COMMAND code with
+ * a different message, so the CLI's exit-code rule (`error.code ===
+ * 'UNKNOWN_COMMAND' → exit 2`) covers both cases uniformly.
  */
 export function dispatch(
   parsed: ParsedArgs,
-  _sources: Sources,
-  _stdin: string,
+  sources: Sources,
+  stdin: string,
+  cache: Cache = createCache(),
 ): Promise<Envelope<unknown>> {
   const { command } = parsed;
   if (command === undefined || !commandNames.includes(command)) {
@@ -153,14 +161,23 @@ export function dispatch(
       ),
     );
   }
-  return Promise.resolve(
-    err(
-      command,
-      'UNKNOWN_COMMAND',
-      `'${command}' is not yet implemented; see roadmap`,
-      'this command is registered but its logic ships in a later task',
-    ),
-  );
+  switch (command) {
+    case 'search':
+      return guard('search', () => runSearch(sources, cache, searchOptsFromArgs(parsed)));
+    case 'batch':
+      return guard('batch', () => runBatch(sources, cache, batchOptsFromArgs(parsed)));
+    case 'hydrate':
+      return guard('hydrate', () => runHydrate(sources, cache, hydrateOptsFromArgs(parsed), stdin));
+    default:
+      return Promise.resolve(
+        err(
+          command,
+          'UNKNOWN_COMMAND',
+          `'${command}' is not yet implemented; see roadmap`,
+          'this command is registered but its logic ships in a later task',
+        ),
+      );
+  }
 }
 
 function exitCodeFor(envelope: Envelope<unknown>): 0 | 1 | 2 {
@@ -201,7 +218,12 @@ export interface RunResult {
  * turned into a FATAL error envelope on stdout with exit 1, so main() can
  * always trust its return value.
  */
-export async function run(argv: string[], sources: Sources, stdin = ''): Promise<RunResult> {
+export async function run(
+  argv: string[],
+  sources: Sources,
+  stdin = '',
+  cache: Cache = createCache(),
+): Promise<RunResult> {
   const parsed = parseArgs(argv);
 
   if (parsed.command === undefined || parsed.bools.has('help')) {
@@ -210,7 +232,7 @@ export async function run(argv: string[], sources: Sources, stdin = ''): Promise
     return { stdout: helpText(), exitCode: 0 };
   }
 
-  const envelope = await runGuarded(parsed.command, () => dispatch(parsed, sources, stdin));
+  const envelope = await runGuarded(parsed.command, () => dispatch(parsed, sources, stdin, cache));
   return { stdout: toJson(envelope, parsed.bools.has('compact')), exitCode: exitCodeFor(envelope) };
 }
 
@@ -248,7 +270,8 @@ export async function runMain(argv: string[], io: MainIO = defaultIO): Promise<R
     // so normal invocations never block waiting on an open pipe.
     const stdin = argv.includes('-') ? await io.readStdin() : '';
     // Lazy: createSources constructs nothing and resolves no token until a
-    // command actually calls an adapter (dispatch is still stubbed).
+    // command actually calls an adapter; run()'s default cache is likewise
+    // lazy (createCache() only resolves paths, touches disk on first use).
     const result = await run(argv, createSources(), stdin);
     io.writeStdout(`${result.stdout}\n`);
     return result;
