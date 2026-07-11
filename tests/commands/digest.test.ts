@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -303,7 +303,10 @@ describe('runDigest — --out requirement for large digests', () => {
 });
 
 describe('runDigest — clone fallback', () => {
-  function cloningExec(fixtureFiles: { path: string; content: string }[]): Exec {
+  function cloningExec(
+    fixtureFiles: { path: string; content: string }[],
+    onClone?: (targetDir: string) => void,
+  ): Exec {
     return async (cmd) => {
       if (cmd[0] === 'git' && cmd[1] === '--version') {
         return { stdout: 'git version 2.40.0', exitCode: 0 };
@@ -315,6 +318,7 @@ describe('runDigest — clone fallback', () => {
           mkdirSync(join(full, '..'), { recursive: true });
           writeFileSync(full, f.content);
         }
+        onClone?.(targetDir);
         return { stdout: '', exitCode: 0 };
       }
       return { stdout: 'unrecognized', exitCode: 1 };
@@ -340,6 +344,22 @@ describe('runDigest — clone fallback', () => {
     );
     expect(result.fallback).toBe('clone');
     expect(result.markdown).toContain('cloned');
+  });
+
+  test('the clone checkout is cleaned up afterward — no leaked temp directory', async () => {
+    const cache = createCache(dir);
+    const { ghRest } = fakeSources({
+      downloadTarball: async () => {
+        throw new EngineError('FETCH_FAILED', 'tarball exceeds the 200MB size guard');
+      },
+    });
+    let clonedDir: string | undefined;
+    const exec = cloningExec([{ path: 'README.md', content: '# cloned' }], (targetDir) => {
+      clonedDir = targetDir;
+    });
+    await runDigest({ ghRest }, cache, { repo: 'o/r', include: [], exclude: [] }, { exec });
+    expect(clonedDir).toBeDefined();
+    expect(existsSync(clonedDir as string)).toBe(false);
   });
 
   test('a tarball failure with git absent fails loud (no fallback possible)', async () => {

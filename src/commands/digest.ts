@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 // style markdown (tree + fenced per-file sections) hard-stops at
 // `--max-tokens` with a steering message. `--out` is required whenever the
 // estimate exceeds the inline-safe threshold; `--list` never touches content.
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -285,7 +285,14 @@ async function viaClone(
   if (exitCode !== 0) {
     throw new EngineError('FETCH_FAILED', `git clone failed: ${stdout.slice(0, 500)}`);
   }
-  return walkDir(targetDir, targetDir);
+  try {
+    return walkDir(targetDir, targetDir);
+  } finally {
+    // Unlike the cached tarball, a clone checkout is disposable scratch space
+    // once its file entries are read into memory — leaving it behind would
+    // leak a full repo checkout under the OS tmp dir on every clone fallback.
+    rmSync(targetDir, { recursive: true, force: true });
+  }
 }
 
 interface Snapshot {
