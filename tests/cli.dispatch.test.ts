@@ -50,6 +50,7 @@ function fakeSources(): Sources {
     ghRest: {} as unknown as Sources['ghRest'],
     ecosystems: {} as unknown as Sources['ecosystems'],
     depsdev: {} as unknown as Sources['depsdev'],
+    grepApp: {} as unknown as Sources['grepApp'],
   };
 }
 
@@ -217,6 +218,59 @@ describe('dispatch — hydrate', () => {
     expect(exitCode).toBe(0);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(true);
+  });
+});
+
+describe('dispatch — code (task 10)', () => {
+  function grepAppHit(overrides: Record<string, unknown> = {}) {
+    return {
+      repo: 'octocat/Hello-World',
+      path: 'src/index.ts',
+      line: 10,
+      snippet: 'const x = useState(0);',
+      lang: 'TypeScript',
+      license: 'MIT',
+      ...overrides,
+    };
+  }
+
+  test('a valid code-pattern search → ok:true, exit 0', async () => {
+    const sources = fakeSources();
+    sources.grepApp = { search: async () => [grepAppHit()] };
+    const { stdout, exitCode } = await run(
+      ['code', 'useState(', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.command).toBe('code');
+  });
+
+  test('natural-language input → INVALID_INPUT with the steering hint, exit 1, zero network', async () => {
+    let called = false;
+    const sources = fakeSources();
+    sources.grepApp = {
+      search: async () => {
+        called = true;
+        return [];
+      },
+    };
+    const { stdout, exitCode } = await run(
+      ['code', 'how', 'to', 'parse', 'markdown', 'files', '--compact'],
+      sources,
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+    expect(envelope.error.hint).toBe('code lanes need code tokens; use search for concepts');
+    expect(called).toBe(false);
   });
 });
 
@@ -492,6 +546,11 @@ describe('dispatch — doctor (task 7)', () => {
           throw new Error('down');
         },
         dependents: async () => {
+          throw new Error('down');
+        },
+      },
+      grepApp: {
+        search: async () => {
           throw new Error('down');
         },
       },

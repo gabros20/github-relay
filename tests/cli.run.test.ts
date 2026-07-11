@@ -43,8 +43,8 @@ describe('run — unknown command', () => {
 });
 
 // search/batch/hydrate (task 4), enrich/rank (task 5), skim/read/digest
-// (task 6), budget/doctor/cache (task 7), and plan (task 9) are wired —
-// their own envelope/exit-code contract is covered in
+// (task 6), budget/doctor/cache (task 7), plan (task 9), and code (task 10)
+// are wired — their own envelope/exit-code contract is covered in
 // tests/cli.dispatch.test.ts. Every other registered command still falls
 // through to the "not yet implemented" path here.
 const WIRED_COMMANDS = new Set([
@@ -52,6 +52,7 @@ const WIRED_COMMANDS = new Set([
   'search',
   'batch',
   'hydrate',
+  'code',
   'enrich',
   'rank',
   'skim',
@@ -64,14 +65,14 @@ const WIRED_COMMANDS = new Set([
 const UNIMPLEMENTED_COMMANDS = commandNames.filter((name) => !WIRED_COMMANDS.has(name));
 
 describe('run — registered but unimplemented command', () => {
-  test('a still-unimplemented runner (code) → UNKNOWN_COMMAND envelope, exit 2, command echoed', async () => {
-    const { stdout, exitCode } = await run(['code'], emptySources);
+  test('a still-unimplemented runner (health) → UNKNOWN_COMMAND envelope, exit 2, command echoed', async () => {
+    const { stdout, exitCode } = await run(['health'], emptySources);
     expect(exitCode).toBe(2);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
     if (envelope.ok) throw new Error('expected failure');
     expect(envelope.error.code).toBe('UNKNOWN_COMMAND');
-    expect(envelope.command).toBe('code');
+    expect(envelope.command).toBe('health');
     expect(envelope.error.message).toContain('not yet implemented');
   });
 
@@ -80,6 +81,17 @@ describe('run — registered but unimplemented command', () => {
       const { exitCode } = await run([name], emptySources);
       expect(exitCode).toBe(2);
     }
+  });
+});
+
+describe('run — code is now wired (task 10)', () => {
+  test('code without a pattern → INVALID_INPUT, exit 1 (not the unimplemented path), zero network', async () => {
+    const { stdout, exitCode } = await run(['code'], emptySources);
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
   });
 });
 

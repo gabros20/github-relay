@@ -8,6 +8,7 @@ import { type Cache, createCache } from './cache/index.ts';
 import { batchOptsFromArgs, runBatch } from './commands/batch.ts';
 import { budgetOptsFromArgs, runBudget } from './commands/budget.ts';
 import { cacheOptsFromArgs, runCache } from './commands/cache.ts';
+import { codeOptsFromArgs, runCode } from './commands/code.ts';
 import { digestOptsFromArgs, runDigest } from './commands/digest.ts';
 import { doctorOptsFromArgs, runDoctor } from './commands/doctor.ts';
 import { enrichOptsFromArgs, runEnrich } from './commands/enrich.ts';
@@ -190,10 +191,10 @@ function helpText(): string {
 /**
  * Dispatch a parsed command against Sources. search/batch/hydrate (task 4),
  * enrich/rank (task 5), skim/read/digest (task 6), budget/doctor/cache
- * (task 7), and plan (task 9) are wired to their runners, each wrapped in
- * `guard()` so an EngineError becomes a per-code envelope. Every other
- * registered command still falls through to a clear "not yet implemented"
- * envelope (code/health — milestone B). A name outside the registry gets the
+ * (task 7), plan (task 9), and code (task 10) are wired to their runners,
+ * each wrapped in `guard()` so an EngineError becomes a per-code envelope.
+ * The one still-unwired command (health — milestone B) falls through to a
+ * clear "not yet implemented" envelope. A name outside the registry gets the
  * same UNKNOWN_COMMAND code with a different message, so the CLI's exit-code
  * rule (`error.code === 'UNKNOWN_COMMAND' → exit 2`) covers both cases
  * uniformly.
@@ -224,6 +225,8 @@ export function dispatch(
       return guard('batch', () => runBatch(sources, cache, batchOptsFromArgs(parsed)));
     case 'hydrate':
       return guard('hydrate', () => runHydrate(sources, cache, hydrateOptsFromArgs(parsed), stdin));
+    case 'code':
+      return guard('code', () => runCode(sources, cache, codeOptsFromArgs(parsed)));
     case 'enrich':
       return guard('enrich', () => runEnrich(sources, cache, enrichOptsFromArgs(parsed)));
     case 'rank':
