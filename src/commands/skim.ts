@@ -61,7 +61,8 @@ export interface SkimResult {
   truncatedTree: boolean;
   hint?: string;
   tree?: SkimTreeSummary;
-  readme?: SkimReadme;
+  /** undefined = --tree-only (never attempted); null = attempted, repo has no README (expected absence). */
+  readme?: SkimReadme | null;
   signals: SkimSignals;
   corpusUpdated?: string;
 }
@@ -258,21 +259,33 @@ async function fetchTree(
   return { entries, truncated: body.truncated === true };
 }
 
-/** Content-addressed by `${owner}/${repo}@${sha}` — once fetched, never refetched (README at a fixed commit is immutable). */
+/**
+ * Content-addressed by `${owner}/${repo}@${sha}` — once fetched, never
+ * refetched (README at a fixed commit is immutable). A repo with no README
+ * is expected absence (design's "missing file -> ok:true" contract), not a
+ * hard failure: NOT_FOUND from the readme fetch resolves to `null` rather
+ * than propagating and aborting the whole skim.
+ */
 async function fetchReadme(
   ghRest: SkimSources['ghRest'],
   cache: Cache,
   owner: string,
   repo: string,
   sha: string,
-): Promise<string> {
+): Promise<string | null> {
   const url = `/repos/${owner}/${repo}/readme?ref=${sha}`;
   const existing = cache.etags.get(url);
   if (existing) {
     const body = cache.etags.getBody(existing.bodyHash);
     if (body !== undefined) return body;
   }
-  const res = await ghRest.get(url, { raw: true, etag: existing?.etag });
+  let res: Awaited<ReturnType<SkimSources['ghRest']['get']>>;
+  try {
+    res = await ghRest.get(url, { raw: true, etag: existing?.etag });
+  } catch (e) {
+    if (e instanceof EngineError && e.code === 'NOT_FOUND') return null;
+    throw e;
+  }
   updateBudgetFromRestHeaders(cache, 'restCore', res.headers);
   if (res.status === 304) {
     const body = existing ? cache.etags.getBody(existing.bodyHash) : undefined;
@@ -352,11 +365,16 @@ export async function runSkim(
   let readmeHead: string | undefined;
   let readmeTruncated = false;
   let readmeBooleans: { install: boolean; usage: boolean; example: boolean } | undefined;
+  let readmeMissing = false;
   if (!opts.treeOnly) {
     const full = await fetchReadme(sources.ghRest, cache, owner, repo, sha);
-    readmeTruncated = full.length > maxChars;
-    readmeHead = readmeTruncated ? full.slice(0, maxChars) : full;
-    readmeBooleans = readmeHeadingBooleans(full);
+    if (full === null) {
+      readmeMissing = true;
+    } else {
+      readmeTruncated = full.length > maxChars;
+      readmeHead = readmeTruncated ? full.slice(0, maxChars) : full;
+      readmeBooleans = readmeHeadingBooleans(full);
+    }
   }
 
   const fetchedAt = new Date(now()).toISOString();
@@ -375,7 +393,9 @@ export async function runSkim(
     signals,
   };
   if (truncatedTree) result.hint = 'tree truncated; use digest for the full snapshot';
-  if (readmeHead !== undefined) result.readme = { head: readmeHead, truncated: readmeTruncated };
+  if (readmeMissing) result.readme = null;
+  else if (readmeHead !== undefined)
+    result.readme = { head: readmeHead, truncated: readmeTruncated };
 
   if (opts.in) {
     const fullName = `${owner}/${repo}`;

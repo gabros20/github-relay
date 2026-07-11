@@ -197,6 +197,56 @@ describe('runSkim — cold run', () => {
     expect(result.readme?.head).toHaveLength(10);
     expect(result.readme?.truncated).toBe(true);
   });
+
+  test('a repo with no README is expected absence, not a hard failure — command still succeeds', async () => {
+    const cache = createCache(dir);
+    const { ghRest, calls } = fakeGhRest({
+      '/repos/o/r/commits/HEAD': () => ({ status: 200, body: { sha: SHA }, etag: '"c1"' }),
+      [`/repos/o/r/git/trees/${SHA}?recursive=1`]: () => ({
+        status: 200,
+        body: treeBody(),
+        etag: '"t1"',
+      }),
+      [`/repos/o/r/readme?ref=${SHA}`]: () => {
+        throw new EngineError('NOT_FOUND', 'no readme');
+      },
+    });
+    const result = await runSkim({ ghRest }, cache, { repo: 'o/r' });
+    expect(calls).toEqual([
+      '/repos/o/r/commits/HEAD',
+      `/repos/o/r/git/trees/${SHA}?recursive=1`,
+      `/repos/o/r/readme?ref=${SHA}`,
+    ]);
+    expect(result.readme).toBeNull();
+    expect(result.signals.readmeInstall).toBe(false);
+    expect(result.signals.readmeUsage).toBe(false);
+    expect(result.signals.readmeExample).toBe(false);
+    // Tree-derived signals (hasCi/hasTests/...) still land — only the
+    // README-derived booleans are affected by the missing README.
+    expect(result.signals.hasCi).toBe(true);
+  });
+
+  test('a missing README still writes readme signals (false, with provenance) into --in corpus.json', async () => {
+    const cache = createCache(dir);
+    const corpusPath = join(dir, 'corpus.json');
+    const { ghRest } = fakeGhRest({
+      '/repos/o/r/commits/HEAD': () => ({ status: 200, body: { sha: SHA }, etag: '"c1"' }),
+      [`/repos/o/r/git/trees/${SHA}?recursive=1`]: () => ({
+        status: 200,
+        body: treeBody(),
+        etag: '"t1"',
+      }),
+      [`/repos/o/r/readme?ref=${SHA}`]: () => {
+        throw new EngineError('NOT_FOUND', 'no readme');
+      },
+    });
+    const result = await runSkim({ ghRest }, cache, { repo: 'o/r', in: corpusPath });
+    expect(result.corpusUpdated).toBe(corpusPath);
+    const saved = loadCorpus(corpusPath);
+    const row = saved.repos[0];
+    expect(row?.signals.readmeInstall?.value).toBe(false);
+    expect(row?.signals.readmeInstall?.source).toBe('skim');
+  });
 });
 
 describe('runSkim — repeat run against an unchanged commit is quota-free', () => {
