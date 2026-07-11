@@ -137,7 +137,7 @@ describe('createCache — every store write stamps the ownership marker (fix wav
 
   test('budget.updateGrepAppBreaker stamps the marker', () => {
     const cache = createCache(dir);
-    cache.budget.updateGrepAppBreaker({ breakerState: 'closed' });
+    cache.budget.updateGrepAppBreaker({ breakerState: 'closed', consecutiveFailures: 0 });
     expect(hasMarker(dir)).toBe(true);
   });
 

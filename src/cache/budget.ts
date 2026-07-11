@@ -16,6 +16,10 @@ export interface GraphqlPoints extends RateWindow {
 
 export interface GrepAppBreaker {
   breakerState: 'closed' | 'open' | 'half-open';
+  /** Consecutive 429/5xx/network failures since the last success (task 10: 2 trips the breaker open). */
+  consecutiveFailures: number;
+  /** ISO timestamp — when an open breaker becomes eligible for its next half-open probe. Absent while closed. */
+  retryAt?: string;
 }
 
 export interface Budget {

@@ -67,8 +67,31 @@ describe('updatePool — writes what headers said + when, never a trusted consta
 
 describe('updateGrepAppBreaker', () => {
   test('records the circuit-breaker state', () => {
-    updateGrepAppBreaker(file, { breakerState: 'open' });
-    expect(loadBudget(file).grepApp).toEqual({ breakerState: 'open' });
+    updateGrepAppBreaker(file, { breakerState: 'open', consecutiveFailures: 2 });
+    expect(loadBudget(file).grepApp).toEqual({ breakerState: 'open', consecutiveFailures: 2 });
+  });
+
+  test('round-trips the optional retryAt cooldown timestamp', () => {
+    updateGrepAppBreaker(file, {
+      breakerState: 'open',
+      consecutiveFailures: 2,
+      retryAt: '2026-07-11T00:05:00.000Z',
+    });
+    expect(loadBudget(file).grepApp).toEqual({
+      breakerState: 'open',
+      consecutiveFailures: 2,
+      retryAt: '2026-07-11T00:05:00.000Z',
+    });
+  });
+
+  test('a later update overwrites the previous breaker snapshot wholesale', () => {
+    updateGrepAppBreaker(file, {
+      breakerState: 'open',
+      consecutiveFailures: 2,
+      retryAt: '2026-07-11T00:05:00.000Z',
+    });
+    updateGrepAppBreaker(file, { breakerState: 'closed', consecutiveFailures: 0 });
+    expect(loadBudget(file).grepApp).toEqual({ breakerState: 'closed', consecutiveFailures: 0 });
   });
 });
 
