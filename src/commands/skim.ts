@@ -331,7 +331,7 @@ function upsertCorpusRow(
       full_name: fullName,
       ghid: '',
       aliases: [],
-      source: 'search',
+      source: 'skim',
       signals,
     };
     repos.push(fresh);

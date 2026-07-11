@@ -21,7 +21,7 @@ export interface CorpusRepo {
   ghid: string;
   aliases: string[];
   renamed?: boolean;
-  source: 'search' | 'agent' | 'trending' | 'code';
+  source: 'search' | 'agent' | 'trending' | 'code' | 'skim';
   /** Per-signal provenance — one entry per enrichment fact, not per fetch. */
   signals: Record<string, SignalProvenance>;
   // Pre-enriched search fields (zero extra enrichment calls to obtain).

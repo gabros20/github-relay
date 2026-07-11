@@ -335,6 +335,7 @@ describe('runSkim — --in corpus.json writes E-group signals with provenance', 
     await runSkim({ ghRest }, cache, { repo: 'o/r', in: corpusPath });
     const saved = loadCorpus(corpusPath);
     expect(saved.repos.map((r) => r.full_name)).toEqual(['o/r']);
+    expect(saved.repos[0]?.source).toBe('skim');
   });
 });
 
