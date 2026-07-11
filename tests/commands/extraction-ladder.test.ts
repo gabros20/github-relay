@@ -133,7 +133,6 @@ describe('skim -> read -> digest against a real fixture tarball, end-to-end', ()
         }
         throw new Error(`unmapped fetch: ${path}`);
       },
-      tarballUrl: async () => 'https://codeload.github.com/o/r/tar',
       downloadTarball: async (_owner, _repo, _ref, opts) => {
         calls.push('tarball');
         const bytes = buildFixtureTarGz();

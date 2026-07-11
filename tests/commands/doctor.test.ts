@@ -23,7 +23,7 @@ function happySources(): DoctorSources {
     ghRest: {
       get: async () => ({ status: 200, headers: headersWith(), body: {}, etag: null }),
     },
-    ghGraphql: { graphql: async () => ({}) },
+    ghGraphql: { graphql: async <T = unknown>() => ({}) as T },
     ecosystems: { repo: async () => ({}) },
     depsdev: { project: async () => ({}) },
   };

@@ -1,11 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import { run, runGuarded } from '../src/cli.ts';
 import { commandNames } from '../src/commands/registry.ts';
+import type { Sources } from '../src/sources/index.ts';
 import type { Envelope } from '../src/types.ts';
+
+// Every call below exercises a path that throws/returns before ever touching
+// Sources (help, unknown command, or an early INVALID_INPUT validation) — an
+// empty stub satisfies run()'s signature without building a real adapter bag.
+const emptySources = {} as Sources;
 
 describe('run — help', () => {
   test('no args prints plain-text help (the one non-envelope stdout) and exits 0', async () => {
-    const { stdout, exitCode } = await run([], {});
+    const { stdout, exitCode } = await run([], emptySources);
     expect(exitCode).toBe(0);
     expect(stdout).toContain('ghrelay');
     // Plain text, not JSON — the documented exception.
@@ -13,20 +19,20 @@ describe('run — help', () => {
   });
 
   test('--help prints the same help text and exits 0', async () => {
-    const { stdout, exitCode } = await run(['--help'], {});
+    const { stdout, exitCode } = await run(['--help'], emptySources);
     expect(exitCode).toBe(0);
     expect(stdout).toContain('Commands:');
   });
 
   test('help lists every registered command name', async () => {
-    const { stdout } = await run([], {});
+    const { stdout } = await run([], emptySources);
     for (const name of commandNames) expect(stdout).toContain(name);
   });
 });
 
 describe('run — unknown command', () => {
   test('a name outside the registry → UNKNOWN_COMMAND envelope, exit 2', async () => {
-    const { stdout, exitCode } = await run(['nonsense'], {});
+    const { stdout, exitCode } = await run(['nonsense'], emptySources);
     expect(exitCode).toBe(2);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
@@ -58,7 +64,7 @@ const UNIMPLEMENTED_COMMANDS = commandNames.filter((name) => !WIRED_COMMANDS.has
 
 describe('run — registered but unimplemented command', () => {
   test('a still-unimplemented runner (code) → UNKNOWN_COMMAND envelope, exit 2, command echoed', async () => {
-    const { stdout, exitCode } = await run(['code'], {});
+    const { stdout, exitCode } = await run(['code'], emptySources);
     expect(exitCode).toBe(2);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
@@ -70,7 +76,7 @@ describe('run — registered but unimplemented command', () => {
 
   test('every still-unimplemented registered command dispatches to the not-yet-implemented path', async () => {
     for (const name of UNIMPLEMENTED_COMMANDS) {
-      const { exitCode } = await run([name], {});
+      const { exitCode } = await run([name], emptySources);
       expect(exitCode).toBe(2);
     }
   });
@@ -78,7 +84,7 @@ describe('run — registered but unimplemented command', () => {
 
 describe('run — enrich/rank are now wired (task 5)', () => {
   test('enrich without --in → INVALID_INPUT, exit 1 (not the unimplemented path)', async () => {
-    const { stdout, exitCode } = await run(['enrich'], {});
+    const { stdout, exitCode } = await run(['enrich'], emptySources);
     expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
@@ -87,7 +93,7 @@ describe('run — enrich/rank are now wired (task 5)', () => {
   });
 
   test('rank without a corpus path → INVALID_INPUT, exit 1', async () => {
-    const { stdout, exitCode } = await run(['rank'], {});
+    const { stdout, exitCode } = await run(['rank'], emptySources);
     expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
@@ -98,7 +104,7 @@ describe('run — enrich/rank are now wired (task 5)', () => {
 
 describe('run — skim/read/digest are now wired (task 6)', () => {
   test('skim without a repo → INVALID_INPUT, exit 1 (not the unimplemented path)', async () => {
-    const { stdout, exitCode } = await run(['skim'], {});
+    const { stdout, exitCode } = await run(['skim'], emptySources);
     expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
@@ -107,7 +113,7 @@ describe('run — skim/read/digest are now wired (task 6)', () => {
   });
 
   test('read without any paths → INVALID_INPUT, exit 1', async () => {
-    const { stdout, exitCode } = await run(['read', 'o/r'], {});
+    const { stdout, exitCode } = await run(['read', 'o/r'], emptySources);
     expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
@@ -116,7 +122,7 @@ describe('run — skim/read/digest are now wired (task 6)', () => {
   });
 
   test('digest without a repo → INVALID_INPUT, exit 1', async () => {
-    const { stdout, exitCode } = await run(['digest'], {});
+    const { stdout, exitCode } = await run(['digest'], emptySources);
     expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
@@ -127,12 +133,12 @@ describe('run — skim/read/digest are now wired (task 6)', () => {
 
 describe('run — output shape', () => {
   test('stdout is pretty (multi-line) JSON by default', async () => {
-    const { stdout } = await run(['nonsense'], {});
+    const { stdout } = await run(['nonsense'], emptySources);
     expect(stdout).toContain('\n');
   });
 
   test('--compact prints single-line JSON', async () => {
-    const { stdout } = await run(['nonsense', '--compact'], {});
+    const { stdout } = await run(['nonsense', '--compact'], emptySources);
     expect(stdout.split('\n').length).toBe(1);
     expect(() => JSON.parse(stdout)).not.toThrow();
   });

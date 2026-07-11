@@ -27,7 +27,7 @@ describe('load — never throws', () => {
   test('valid JSON round-trips through save/load', () => {
     const path = join(dir, 'nested', 'data.json');
     save(path, { a: [1, 2, 3] });
-    expect(load(path, null)).toEqual({ a: [1, 2, 3] });
+    expect(load<{ a: number[] }>(path, { a: [] })).toEqual({ a: [1, 2, 3] });
   });
 });
 
@@ -35,7 +35,7 @@ describe('save — atomic + auto-create', () => {
   test('creates nested directories that do not exist yet', () => {
     const path = join(dir, 'a', 'b', 'c.json');
     save(path, { ok: true });
-    expect(load(path, null)).toEqual({ ok: true });
+    expect(load<{ ok: boolean }>(path, { ok: false })).toEqual({ ok: true });
   });
 
   test('leaves no temp files behind after a successful write', () => {
