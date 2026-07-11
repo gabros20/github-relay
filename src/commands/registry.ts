@@ -51,7 +51,8 @@ export const COMMANDS: CommandDef[] = [
     cost: 'free — grep.app lane',
     summary:
       'Code-token/regex evidence search across ~1M top repos. Not for natural-language intent.',
-    usage: 'ghrelay code <pattern> [--lang X --repo o/r --path P] [--limit 20]',
+    usage:
+      'ghrelay code <pattern> [--lang X --repo o/r --path P] [--limit 20] [--literal] [--out corpus.json]',
   },
   {
     name: 'enrich',
@@ -71,10 +72,10 @@ export const COMMANDS: CommandDef[] = [
   },
   {
     name: 'health',
-    cost: '1 heavy GraphQL point per <=10 ids + 1 ClickHouse POST + 1 REST call per id',
+    cost: '1-2 GraphQL points per <=10 ids (heavy fragment + a one-time starredAt probe) + 1 ClickHouse POST + 1 REST call per id',
     summary:
       'Forensics on finalists — issue latency, star-velocity burstiness, bus factor. Re-scores C/D/F.',
-    usage: 'ghrelay health <ids...>',
+    usage: 'ghrelay health <ids...> --in corpus.json',
   },
   {
     name: 'skim',
