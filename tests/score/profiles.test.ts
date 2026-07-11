@@ -25,14 +25,14 @@ describe('profile weights — exact design §5 letter', () => {
     expect(sum).toBe(100);
   });
 
-  // Design §5 (and the brief) list dissect as E40 Structure15 A5 B10 C10 D5 F10
-  // L0 — which totals 95, not 100. We implement the numbers VERBATIM rather than
-  // improvise where a missing 5 points would go; scoring renormalizes by the
-  // present-component weight sum, so the total is immaterial to ordering. See
-  // task-5 report + the note sent to the lead.
-  test('dissect: E40 Structure15 A5 B10 C10 D5 F10 L0 (design-verbatim, totals 95)', () => {
+  // Erratum 2026-07-11 (design §5): the original panel text listed Structure15,
+  // summing to 95; the controller corrected Structure to 20 so dissect totals
+  // 100 (Structure, the dissect-only group, absorbs the gap). Scoring still
+  // renormalizes by present-component weight, so the total is immaterial to
+  // ordering regardless.
+  test('dissect: E40 Structure20 A5 B10 C10 D5 F10 L0, summing to 100', () => {
     expect(weightOf('dissect', 'E')).toBe(40);
-    expect(weightOf('dissect', 'Structure')).toBe(15);
+    expect(weightOf('dissect', 'Structure')).toBe(20);
     expect(weightOf('dissect', 'A')).toBe(5);
     expect(weightOf('dissect', 'B')).toBe(10);
     expect(weightOf('dissect', 'C')).toBe(10);
@@ -40,7 +40,7 @@ describe('profile weights — exact design §5 letter', () => {
     expect(weightOf('dissect', 'F')).toBe(10);
     expect(weightOf('dissect', 'L')).toBe(0);
     const sum = PROFILES.dissect.components.reduce((s, c) => s + c.weight, 0);
-    expect(sum).toBe(95);
+    expect(sum).toBe(100);
   });
 
   test('ideas: Recency30 F25 E20 Novelty15 BC10 L0, summing to 100', () => {

@@ -82,7 +82,10 @@ export const PROFILES: Record<ProfileName, Profile> = {
     name: 'dissect',
     components: [
       { key: 'E', weight: 40 },
-      { key: 'Structure', weight: 15 },
+      // Erratum 2026-07-11 (design §5): panel text listed Structure15 (summing to
+      // 95); corrected to 20 so dissect totals 100 — Structure, the dissect-only
+      // group, absorbs the gap. Scoring renormalizes by present weight regardless.
+      { key: 'Structure', weight: 20 },
       { key: 'A', weight: 5 },
       { key: 'B', weight: 10 },
       { key: 'C', weight: 10 },
