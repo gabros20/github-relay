@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { load, readFileIfExists, save, writeFileAtomic } from '../../src/cache/store.ts';
@@ -61,5 +61,18 @@ describe('writeFileAtomic / readFileIfExists — raw content', () => {
     const path = join(dir, 'raw.txt');
     writeFileAtomic(path, 'hello');
     expect(readdirSync(dir)).toEqual(['raw.txt']);
+  });
+
+  test('an injected write failure leaves no orphaned .tmp file behind', () => {
+    const sub = join(dir, 'ro');
+    mkdirSync(sub);
+    chmodSync(sub, 0o500); // read + execute only — writeFileSync(tmp, ...) fails with EACCES
+    const path = join(sub, 'file.json');
+    try {
+      expect(() => writeFileAtomic(path, 'hello')).toThrow();
+    } finally {
+      chmodSync(sub, 0o700); // restore so readdir/afterEach cleanup can proceed
+    }
+    expect(readdirSync(sub).filter((n) => n.endsWith('.tmp'))).toEqual([]);
   });
 });

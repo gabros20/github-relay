@@ -4,15 +4,37 @@
 // crashing a command. Every other cache module builds on these two
 // primitives; none of them touches fs directly.
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-/** Write raw text atomically: a temp file in the same directory, then a rename. */
+/**
+ * Write raw text atomically: a temp file in the same directory, then a
+ * rename. A failure on either step (ENOSPC/EACCES on the write, or a rename
+ * failure) unlinks the temp file before rethrowing — a half-written `.tmp`
+ * must never linger in the cache directory after a failed write.
+ *
+ * Deliberately no `fsync` before the rename: this is a single-user local
+ * cache, not a durability-critical store — every value here is either
+ * re-derivable (etags, trees, blobs, budget state) or an agent-authored
+ * corpus the agent can re-run to regenerate. A power-loss window between
+ * write and rename losing the latest update is an accepted tradeoff against
+ * the extra syscall on every write.
+ */
 export function writeFileAtomic(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${randomUUID()}.tmp`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, content);
+    renameSync(tmp, path);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // The temp file may never have been created (write itself failed) —
+      // an unlink failure here is never the error worth surfacing.
+    }
+    throw e;
+  }
 }
 
 /** Read raw text at `path`, or undefined if it doesn't exist / can't be read. */
