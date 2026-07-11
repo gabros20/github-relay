@@ -43,7 +43,7 @@ export interface GhRest {
     repo: string,
     ref: string,
     opts: DownloadOptions,
-  ): Promise<{ path: string; bytes: number }>;
+  ): Promise<{ path: string; bytes: number; headers: Headers }>;
 }
 
 /** A streaming write target so a tarball never has to be buffered in memory. */
@@ -201,7 +201,19 @@ export function createGhRest(deps: GhRestDeps): GhRest {
     }
   }
 
-  async function tarballUrl(owner: string, repo: string, ref: string): Promise<string> {
+  /**
+   * Resolve the tarball's actual byte-download location plus the api.github.com
+   * response headers (needed by callers to update the restCore budget pool —
+   * task 6 — since the second hop is codeload.github.com, a different host
+   * that carries no GitHub rate-limit headers at all). `tarballUrl` and
+   * `downloadTarball` both delegate here so the public `tarballUrl()` contract
+   * (a bare string) stays unchanged.
+   */
+  async function resolveTarballTarget(
+    owner: string,
+    repo: string,
+    ref: string,
+  ): Promise<{ location: string; headers: Headers }> {
     const token = await getToken();
     const url = `${API}/repos/${owner}/${repo}/tarball/${ref}`;
     const res = await fetchOrThrow(url, { headers: buildHeaders(token), redirect: 'manual' });
@@ -209,16 +221,20 @@ export function createGhRest(deps: GhRestDeps): GhRest {
     const location = res.headers.get('location');
     if (res.status >= 300 && res.status < 400 && location) {
       assertAllowedHost(location);
-      return location;
+      return { location, headers: res.headers };
     }
     // A runtime that auto-followed lands on a 200 at codeload; still enforce the host.
     if (res.status === 200 && res.url) {
       assertAllowedHost(res.url);
-      return res.url;
+      return { location: res.url, headers: res.headers };
     }
     if (res.status === 404)
       throw new EngineError('NOT_FOUND', `no tarball for ${owner}/${repo}@${ref}`, 404);
     throw new EngineError('FETCH_FAILED', `unexpected tarball response ${res.status}`, res.status);
+  }
+
+  async function tarballUrl(owner: string, repo: string, ref: string): Promise<string> {
+    return (await resolveTarballTarget(owner, repo, ref)).location;
   }
 
   async function streamToFile(
@@ -274,8 +290,8 @@ export function createGhRest(deps: GhRestDeps): GhRest {
     repo: string,
     ref: string,
     opts: DownloadOptions,
-  ): Promise<{ path: string; bytes: number }> {
-    const target = await tarballUrl(owner, repo, ref);
+  ): Promise<{ path: string; bytes: number; headers: Headers }> {
+    const { location: target, headers } = await resolveTarballTarget(owner, repo, ref);
     const token = await getToken();
     const res = await fetchTarballBytes(target, token);
     if (!res.ok || !res.body) {
@@ -292,7 +308,7 @@ export function createGhRest(deps: GhRestDeps): GhRest {
       throw new EngineError('FETCH_FAILED', `tarball exceeds the ${opts.maxBytes}-byte size guard`);
     }
     const bytes = await streamToFile(res.body, opts.out, opts.maxBytes);
-    return { path: opts.out, bytes };
+    return { path: opts.out, bytes, headers };
   }
 
   return { get, tarballUrl, downloadTarball };

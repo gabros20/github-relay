@@ -238,6 +238,25 @@ describe('downloadTarball — size guard', () => {
   });
 });
 
+describe('downloadTarball — exposes first-hop headers for budget bookkeeping (task 6)', () => {
+  const OUT = `${import.meta.dir}/../../node_modules/.cache-ghrelay-test-tarball-headers.tar.gz`;
+
+  test('result.headers is the api.github.com redirect response — codeload carries no rate-limit headers', async () => {
+    const codeload = 'https://codeload.github.com/a/b/tar';
+    const { fetchImpl } = routingFetch((u) =>
+      u.startsWith('https://api.github.com')
+        ? new Response(null, {
+            status: 302,
+            headers: { location: codeload, 'x-ratelimit-remaining': '4999' },
+          })
+        : new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+    );
+    const rest = createGhRest({ fetchImpl, getToken });
+    const result = await rest.downloadTarball('a', 'b', 'main', { out: OUT, maxBytes: 1000 });
+    expect(result.headers.get('x-ratelimit-remaining')).toBe('4999');
+  });
+});
+
 describe('get — malformed 2xx body fails loud (CRITICAL 1)', () => {
   test('a 200 with a non-JSON body throws FETCH_FAILED, never a silent null', async () => {
     const { fetchImpl } = routingFetch(() => new Response('<html>oops</html>', { status: 200 }));
