@@ -151,6 +151,7 @@ interface Metrics {
   orgOwned: boolean;
   // D
   closeRatio: number | null;
+  closeRatioBasis: CloseRatioBasis;
   latencyScore: number | null;
   // E
   descPresent: number;
@@ -187,12 +188,29 @@ function engagementSum(repo: CorpusRepo): number | null {
   return present.length === 0 ? null : present.reduce((a, b) => a + b, 0);
 }
 
-function closeRatioOf(repo: CorpusRepo): number | null {
+export type CloseRatioBasis = '90d' | 'lifetime' | null;
+
+/**
+ * D-group close ratio + which basis produced it. The 90d window (design §5 D)
+ * lives in health's OWN signal keys (`openIssues90d`/`closedIssues90d`, source
+ * `health`), kept distinct from enrich's lifetime `openIssues`/`closedIssues`
+ * so a later re-enrich can never silently revert D to the lifetime
+ * approximation. Preference: the 90d pair when BOTH are present, else the
+ * lifetime pair (the honest pre-health D approximation). This is key selection
+ * only — the closed/(open+closed) formula and §5 thresholds are unchanged.
+ */
+function closeRatioOf(repo: CorpusRepo): { value: number | null; basis: CloseRatioBasis } {
+  const open90 = numSig(repo, 'openIssues90d');
+  const closed90 = numSig(repo, 'closedIssues90d');
+  if (open90 !== null && closed90 !== null) {
+    const total = open90 + closed90;
+    return { value: total <= 0 ? null : closed90 / total, basis: '90d' };
+  }
   const open = numSig(repo, 'openIssues');
   const closed = numSig(repo, 'closedIssues');
-  if (open === null || closed === null) return null;
+  if (open === null || closed === null) return { value: null, basis: null };
   const total = open + closed;
-  return total <= 0 ? null : closed / total; // no issues at all = no responsiveness signal
+  return { value: total <= 0 ? null : closed / total, basis: 'lifetime' };
 }
 
 function skimQualityOf(repo: CorpusRepo): number | null {
@@ -277,6 +295,7 @@ function deriveMetrics(repo: CorpusRepo, ctx: ScoreContext): Metrics {
   const ageDays = daysSince(repo.createdAt, ctx.now);
   const ageMonths = ageDays !== null && ageDays > 0 ? ageDays / DAYS_PER_MONTH : null;
 
+  const closeRatio = closeRatioOf(repo);
   const commits90d = numSig(repo, 'commits90d');
   const dependentsRaw = numSig(repo, 'dependentReposCount') ?? numSig(repo, 'dependents');
   const downloadsPct = numSig(repo, 'downloadsPercentile');
@@ -308,7 +327,8 @@ function deriveMetrics(repo: CorpusRepo, ctx: ScoreContext): Metrics {
     mentionableScore: satOrNull(mentionableUsers, THRESHOLDS.mentionableUsers),
     contributorShareScore: topShare === null ? null : clamp01(1 - topShare),
     orgOwned: boolSig(repo, 'orgOwned') === true,
-    closeRatio: closeRatioOf(repo),
+    closeRatio: closeRatio.value,
+    closeRatioBasis: closeRatio.basis,
     latencyScore: recencyOrNull(numSig(repo, 'closeLatencyDays'), THRESHOLDS.closeLatency),
     descPresent: presentBit(repo.description && repo.description.trim() !== ''),
     topicsPresent: presentBit(repo.topics && repo.topics.length > 0),
@@ -474,6 +494,11 @@ function buildExplain(
       license: m.license,
       packaged: m.packaged,
       dataAgeDays: m.dataAgeDays,
+      closeRatio: m.closeRatio,
+      // Which issue window fed D's close ratio: '90d' once health has run
+      // (openIssues90d/closedIssues90d), 'lifetime' from enrich's totals, or
+      // null when neither is present — so --explain shows the basis plainly.
+      closeRatioBasis: m.closeRatioBasis,
     },
     saturation: {
       pushRecency: { value: m.ageDays, threshold: THRESHOLDS.push, score: m.pushRecency },

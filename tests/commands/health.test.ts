@@ -7,6 +7,7 @@ import {
   type Corpus,
   type CorpusRepo,
   loadCorpus,
+  mergeCorpus,
   saveCorpus,
 } from '../../src/cache/corpus.ts';
 import { createCache } from '../../src/cache/index.ts';
@@ -22,6 +23,8 @@ import {
   runHealth,
   topContributorShare,
 } from '../../src/commands/health.ts';
+import { resolveProfile } from '../../src/score/profiles.ts';
+import { scoreRepo } from '../../src/score/scoring.ts';
 import {
   type ClickhouseEventRow,
   createClickhousePlay,
@@ -395,7 +398,11 @@ describe('runHealth — end-to-end coverage completion', () => {
     expect(one?.signals.topContributorShare?.source).toBe('github-rest');
     expect(one?.signals.burstiness?.source).toBe('clickhouse-play');
     expect(one?.signals.closeLatencyDays?.source).toBe('github-graphql');
-    expect(one?.signals.openIssues?.value).toBe(5); // 90d state-split overwrote lifetime
+    // 90d split lands in DISTINCT keys (source 'health'), never the lifetime keys.
+    expect(one?.signals.openIssues90d?.value).toBe(5);
+    expect(one?.signals.openIssues90d?.source).toBe('health');
+    expect(one?.signals.closedIssues90d?.value).toBe(15);
+    expect(one?.signals.openIssues).toBeUndefined(); // enrich's lifetime keys untouched
   });
 });
 
@@ -441,8 +448,17 @@ describe('runHealth — fake-star combo fires ONLY with engagement-zero (design 
     });
 
   test('burst + engagement-zero + >500 stars + >6mo age → possible-fake-stars', async () => {
+    // Engagement floor is LIFETIME (enrich's keys); a fake-star repo has zero
+    // lifetime issues/PRs and no mentionable users → engagementSum 0.
     const path = writeCorpus(dir, [
-      enrichedRepo('o/fake', { stars: 800, createdAt: '2016-01-01T00:00:00Z', signals: {} }),
+      enrichedRepo('o/fake', {
+        stars: 800,
+        createdAt: '2016-01-01T00:00:00Z',
+        signals: {
+          openIssues: { value: 0, source: 'github-graphql', fetchedAt: NOW_ISO },
+          closedIssues: { value: 0, source: 'github-graphql', fetchedAt: NOW_ISO },
+        },
+      }),
     ]);
     const cache = createCache(dir);
     const handle = fakeSources({
@@ -625,6 +641,95 @@ describe('runHealth — SQL safety + input contracts', () => {
     );
     expect(result.failed.some((f) => f.id === 'o/ghost' && f.code === 'NOT_FOUND')).toBe(true);
     expect(result.verified).toBe(1);
+  });
+});
+
+describe('D-group basis is run-order-independent (fix wave 1: distinct 90d keys)', () => {
+  const scoreD = (repo: CorpusRepo) =>
+    scoreRepo(repo, resolveProfile(undefined), { now: NOW() }).explain.raw;
+
+  test('pre-health corpus scores D from the lifetime fallback (basis lifetime)', () => {
+    const repo = enrichedRepo('o/pre', {
+      signals: {
+        openIssues: { value: 80, source: 'github-graphql', fetchedAt: NOW_ISO },
+        closedIssues: { value: 20, source: 'github-graphql', fetchedAt: NOW_ISO },
+      },
+    });
+    const raw = scoreD(repo);
+    expect(raw.closeRatioBasis).toBe('lifetime');
+    expect(raw.closeRatio).toBeCloseTo(0.2, 5); // 20/(80+20)
+  });
+
+  test('enrich → health → re-enrich → rank keeps D on the 90d basis (no silent revert)', async () => {
+    // enrich: lifetime split 80 open / 20 closed → lifetime ratio 0.2.
+    const path = writeCorpus(dir, [
+      enrichedRepo('o/one', {
+        signals: {
+          commits90d: { value: 100, source: 'github-graphql', fetchedAt: '2026-07-01T00:00:00Z' },
+          dependentReposCount: {
+            value: 300,
+            source: 'ecosyste.ms',
+            fetchedAt: '2026-07-01T00:00:00Z',
+          },
+          openIssues: { value: 80, source: 'github-graphql', fetchedAt: '2026-07-01T00:00:00Z' },
+          closedIssues: { value: 20, source: 'github-graphql', fetchedAt: '2026-07-01T00:00:00Z' },
+        },
+      }),
+    ]);
+    const cache = createCache(dir);
+
+    // health: 90d split 2 open / 18 closed → 90d ratio 0.9 (distinct keys).
+    const handle = fakeSources({
+      probe: 'restricted',
+      heavy: {
+        'o/one': heavyNode('o/one', { open90d: { totalCount: 2 }, closed90d: { totalCount: 18 } }),
+      },
+      clickhouse: (ns) =>
+        ns.map((n) => ({
+          repo_name: n,
+          month: '2020-01-01',
+          event_type: 'WatchEvent',
+          stars: 100,
+        })),
+      contributors: { 'o/one': [{ login: 'a', contributions: 100 }] },
+    });
+    await runHealth(handle.sources, cache, { in: path, ids: ['o/one'] }, { now: NOW });
+
+    // re-enrich: fresh-wins overwrites the LIFETIME keys with newer values, but
+    // never touches health's distinct 90d keys.
+    const afterHealth = loadCorpus(path);
+    const reEnrich: Corpus = {
+      schema: CORPUS_SCHEMA,
+      intent: 'test',
+      generatedAt: '2026-07-11T00:00:00Z',
+      queries: [],
+      count: 1,
+      repos: [
+        {
+          full_name: 'o/one',
+          ghid: 'R_o/one',
+          aliases: [],
+          source: 'search',
+          signals: {
+            openIssues: { value: 90, source: 'github-graphql', fetchedAt: '2026-07-11T00:00:00Z' },
+            closedIssues: {
+              value: 10,
+              source: 'github-graphql',
+              fetchedAt: '2026-07-11T00:00:00Z',
+            },
+          },
+        },
+      ],
+    };
+    saveCorpus(path, mergeCorpus(afterHealth, reEnrich), NOW);
+
+    // rank/score: D must still read the 90d basis (0.9), NOT the re-enriched lifetime (0.1).
+    const finalRepo = loadCorpus(path).repos[0] as CorpusRepo;
+    const raw = scoreD(finalRepo);
+    expect(raw.closeRatioBasis).toBe('90d');
+    expect(raw.closeRatio).toBeCloseTo(0.9, 5); // 18/(2+18), health's window survives
+    expect(finalRepo.signals.openIssues?.value).toBe(90); // lifetime keys did update
+    expect(finalRepo.signals.openIssues90d?.value).toBe(2); // 90d keys survived the re-enrich
   });
 });
 

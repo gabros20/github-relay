@@ -373,6 +373,11 @@ function put(
 const GH = 'github-graphql';
 const REST = 'github-rest';
 const CH = 'clickhouse-play';
+// health's own 90d issue-window facts live under distinct keys with a distinct
+// provenance source, kept separate from enrich's lifetime openIssues/closedIssues
+// so a later re-enrich can't silently revert D's basis (scoring prefers the 90d
+// keys when present). The source marker also makes --explain's basis obvious.
+const HEALTH = 'health';
 
 interface AssembledSignals {
   signals: Record<string, SignalProvenance>;
@@ -399,14 +404,15 @@ function assembleSignals(args: {
   let starredAt: StarredAtShape | undefined;
 
   // D — heavy fragment: median close latency + the 90d state-split ratio. The
-  // 90d counts OVERWRITE enrich's lifetime openIssues/closedIssues on purpose:
-  // scoring.closeRatioOf reads exactly these keys, and design §5 D specifies a
-  // 90d ratio — a GATE-3 refinement of the GATE-2 lifetime values (fresh-wins).
+  // 90d counts land in DISTINCT keys (openIssues90d/closedIssues90d, source
+  // `health`), NOT enrich's lifetime openIssues/closedIssues — scoring prefers
+  // the 90d pair when present but keeps the lifetime pair as an honest fallback,
+  // so a re-enrich after health can never silently revert D's basis.
   if (heavy) {
     const latency = medianCloseLatencyDays(heavy.recentClosed?.nodes ?? []);
     put(signals, 'closeLatencyDays', latency, GH, fetchedAt);
-    put(signals, 'openIssues', heavy.open90d?.totalCount, GH, fetchedAt);
-    put(signals, 'closedIssues', heavy.closed90d?.totalCount, GH, fetchedAt);
+    put(signals, 'openIssues90d', heavy.open90d?.totalCount, HEALTH, fetchedAt);
+    put(signals, 'closedIssues90d', heavy.closed90d?.totalCount, HEALTH, fetchedAt);
     const sample = readStarredAtSample(heavy);
     starredAt = sample.shape;
     put(signals, 'starredAtSampleShape', sample.shape, GH, fetchedAt);
