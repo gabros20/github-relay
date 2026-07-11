@@ -373,3 +373,29 @@ describe('downloadTarball — second-hop host enforcement (IMPORTANT 4)', () => 
     expect(err.message).toContain('evil.example.com');
   });
 });
+
+describe('downloadTarball — the REAL default WriteSink at an unwritable path (task 8b fix wave 2)', () => {
+  // No `createSink` override — this exercises `defaultCreateSink` itself
+  // (node:fs.createWriteStream), not a test fake. Pre-fix, a Writable with no
+  // 'error' listener throws an UNHANDLED exception the moment the stream
+  // fails (confirmed under plain node: the write() callback receives the
+  // error, but the process still crashes right after) — completely bypassing
+  // this promise chain and every envelope layer above it. This test would
+  // crash the whole test process pre-fix; post-fix it must reject cleanly
+  // with a structured EngineError.
+  test('a write failure (bad parent directory) rejects with FETCH_FAILED, never crashes the process', async () => {
+    const codeload = 'https://codeload.github.com/a/b/tar';
+    const { fetchImpl } = routingFetch((u) =>
+      u.startsWith('https://api.github.com')
+        ? new Response(null, { status: 302, headers: { location: codeload } })
+        : new Response(new Uint8Array([1, 2, 3, 4, 5]), { status: 200 }),
+    );
+    const rest = createGhRest({ fetchImpl, getToken });
+    const err = (await rest
+      .downloadTarball('a', 'b', 'main', { out: '/definitely/does/not/exist/dir/file.tar.gz' })
+      .catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    expect(err.code).toBe('FETCH_FAILED');
+    expect(err.message).toContain('tarball write failed');
+  });
+});

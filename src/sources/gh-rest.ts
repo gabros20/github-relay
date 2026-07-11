@@ -63,14 +63,41 @@ export type GhRestDeps = Partial<Seams> & {
 
 const defaultCreateSink: CreateSink = (path) => {
   const stream = createWriteStream(path);
+  // A Writable with zero 'error' listeners throws an UNHANDLED exception the
+  // moment a stream-level failure occurs (ENOENT/EACCES/ENOSPC — confirmed:
+  // under plain node this crashes the whole process even though write()'s own
+  // callback also receives the error) — completely bypassing every envelope
+  // layer above it. This listener is what prevents that; `error` is then
+  // surfaced through the normal write()/close() promise chain below instead.
+  let error: Error | undefined;
+  stream.on('error', (err) => {
+    error = err instanceof Error ? err : new Error(String(err));
+  });
+
   return {
     write: (chunk) =>
       new Promise<void>((resolve, reject) => {
-        stream.write(chunk, (err) => (err ? reject(err) : resolve()));
+        if (error) {
+          reject(error);
+          return;
+        }
+        stream.write(chunk, (err) => {
+          const failure = err ?? error;
+          if (failure) reject(failure);
+          else resolve();
+        });
       }),
     close: () =>
       new Promise<void>((resolve, reject) => {
-        stream.end((err?: Error | null) => (err ? reject(err) : resolve()));
+        if (error) {
+          reject(error);
+          return;
+        }
+        stream.end((err?: Error | null) => {
+          const failure = err ?? error;
+          if (failure) reject(failure);
+          else resolve();
+        });
       }),
   };
 };
@@ -245,10 +272,15 @@ export function createGhRest(deps: GhRestDeps): GhRest {
     out: string,
     maxBytes: number | undefined,
   ): Promise<number> {
-    const sink = await createSink(out);
     const reader = body.getReader();
     let total = 0;
+    let sink: WriteSink | undefined;
     try {
+      // Sink CREATION belongs inside the try too, not just its writes: bun's
+      // node:fs shim throws synchronously for a bad path at createWriteStream()
+      // time (node instead fails later, asynchronously, via the sink's 'error'
+      // listener) — both must land in the same wrapped-EngineError path below.
+      sink = await createSink(out);
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -258,9 +290,23 @@ export function createGhRest(deps: GhRestDeps): GhRest {
         }
         await sink.write(value);
       }
-    } finally {
-      await sink.close();
+    } catch (e) {
+      // A close() failure here is secondary noise once the loop has already
+      // failed for a real reason — never let it clobber that original error.
+      await sink?.close().catch(() => {});
+      if (e instanceof EngineError) throw e;
+      // A raw stream failure (ENOSPC/EACCES/a bad path — surfaced through
+      // defaultCreateSink's 'error' listener, or bun's synchronous throw at
+      // creation time) wrapped like every other tarball failure mode, so
+      // digest's clone fallback treats it the same way it treats any other
+      // tarball failure instead of skipping straight to a generic FATAL
+      // envelope.
+      throw new EngineError(
+        'FETCH_FAILED',
+        `tarball write failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
+    await sink.close();
     return total;
   }
 

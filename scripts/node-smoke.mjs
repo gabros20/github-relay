@@ -130,6 +130,25 @@ async function checkTarballWriteSink() {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+
+  // Failure-path probe (task 8b fix wave 2): under plain node, a Writable
+  // with no 'error' listener throws an UNHANDLED exception and crashes the
+  // whole process the moment the stream fails (ENOSPC/EACCES/a bad path) —
+  // this is the ENOSPC-class propagation check. If defaultCreateSink's error
+  // listener regresses, THIS PROCESS crashes right here rather than the
+  // check merely failing, which is itself the signal.
+  const badOut = join(dir, 'does', 'not', 'exist', 'fixture.tar.gz');
+  try {
+    await sources.ghRest.downloadTarball('octocat', 'Hello-World', 'deadbeef', { out: badOut });
+    failures.push('downloadTarball: a write to a nonexistent directory unexpectedly succeeded');
+  } catch (e) {
+    const code = e && typeof e === 'object' ? e.code : undefined;
+    if (code !== 'FETCH_FAILED') {
+      failures.push(`downloadTarball: write failure did not surface as FETCH_FAILED (got: ${e})`);
+    } else {
+      console.log('node-smoke: gh-rest downloadTarball WriteSink failure-path ok (structured FETCH_FAILED, no crash)');
+    }
+  }
 }
 
 // ── 4. mcp-shim stdio handshake ─────────────────────────────────────────
