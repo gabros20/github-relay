@@ -24,10 +24,12 @@ free zero-permission fine-grained PAT. No paid API keys, ever.
 ## The funnel
 
 ```
-GATE 0 — plan                     roadmap (v0.1 milestone B) — not yet implemented.
-  For now: hand-write 3-6 query shards yourself (design §3 item 1's validation rules still
-  apply informally — keep each under 256 chars / 5 AND·OR·NOT operators, or `search`/`batch`
-  will reject it with QUERY_TOO_COMPLEX and a split hint).
+GATE 0 — plan                     free local / --probe: 1 pt/slice
+  ghrelay plan "topic:markdown language:swift stars:>50" "topic:notes topic:macos" --probe
+  → validates each shard (256 chars / 5 AND·OR·NOT operators) before anything else runs;
+  --probe spends 1 point per shard to check its result count and auto-splits anything over
+  the 1,000-result cap into stars:/created: shards, RE-PROBING each one until every leaf
+  fits (or is reported with a manual-narrowing hint — never silently dropped).
 
 GATE 1 — wide net                 cheap: search / batch / hydrate
   ghrelay batch --file shards.txt --out corpus.json
@@ -64,6 +66,29 @@ All commands print a JSON envelope to stdout: `{ok, command, data}` on success,
 `{ok:false, command, error:{code, message, hint, status?, retryAfterMs?}}` on failure.
 Exit codes: 0 ok, 1 command error, 2 unknown command. Over MCP, every tool forces `--quiet`
 (no stderr progress) and `--compact` (single-line JSON) — you never need to pass either.
+
+### `plan` — free local / --probe: 1 point per slice. GATE 0, validate before you spend.
+```
+ghrelay plan <slices...> [--dry] [--probe] [--shard stars|created] [--out queries.txt]
+```
+- Positional slices (also `-` for newline-separated stdin, `#` comments skipped). Default (and
+  `--dry`, an alias) validates every slice OFFLINE — the same 256-char / 5-`AND`/`OR`/`NOT`-
+  operator limits `search`/`batch` enforce — zero network, so bad shards are caught before
+  anything is spent.
+- `--probe` spends 1 GraphQL point per slice on a `repositoryCount`-only probe (serialized,
+  500ms apart, never after the last). A slice over the 1,000-result cap is auto-sharded on
+  `--shard` (default `stars`, else `created`) and EVERY shard is re-probed — a shard still over
+  the cap recurses again (up to 5 levels deep), never a naive one-shot split. A slice that
+  already carries a `stars:`/`created:` qualifier is narrowed WITHIN that range (never a
+  contradictory second qualifier); if the active dimension can't be split further, plan falls
+  back to the other one; if both are exhausted (or the depth cap is hit), the leftover shard is
+  still returned with a `count` and a manual-narrowing `hint` — never silently dropped.
+- Output: `{slices: [{slice, ok, count?, shards?: [{query, count, hint?}], error?}], queries,
+  estimatedPoints, pointsSpent}` — `queries` is the flat, batch-ready list (valid slices as-is
+  offline, or their probed/sharded leaves with `--probe`); `estimatedPoints` forecasts what
+  running `queries` through `batch` would cost, `pointsSpent` is what `plan` itself just spent.
+  `--out queries.txt` writes that list batch-compatible (one query per line, `#` header) — feed
+  it straight into `batch --file queries.txt --out corpus.json`.
 
 ### `search` — cheap, 1 GraphQL point per 100 results. The wide net.
 ```
@@ -199,14 +224,11 @@ ghrelay cache gc [--older-than 30d]
 
 ### Roadmap (v0.1 milestone B — registry-listed, not yet implemented)
 
-- **`plan`** — validate/probe query shards before spending anything, auto-expand >1,000-result
-  slices into `created:`/`stars:` shards. For now, write and validate shards by hand (see
-  GATE 0 above).
 - **`code`** — grep.app code-token/regex evidence lane (`INVALID_INPUT` on natural-language
   input — it needs actual code tokens/regex, not intent).
 - **`health`** — GATE 3 forensics consolidation: issue close-latency, ClickHouse lifetime
   star-velocity histograms (burstiness, viral-corroboration), `/contributors` bus factor;
-  auto-recomputes C/D/F and coverage. Calling any of these returns `UNKNOWN_COMMAND` with a
+  auto-recomputes C/D/F and coverage. Calling either of these returns `UNKNOWN_COMMAND` with a
   "not yet implemented" message — don't script against them yet.
 
 ---
@@ -250,7 +272,7 @@ never guess a shorter wait.**
 - `CONFIRMATION_REQUIRED` — a destructive op (`cache clear`) needs `--confirm`; nothing was
   touched.
 - `UNKNOWN_COMMAND` — a name outside the registry, OR a registered-but-not-yet-implemented
-  command (`plan`/`code`/`health` — see Roadmap above).
+  command (`code`/`health` — see Roadmap above).
 - `FETCH_FAILED` — a generic transport/parse failure not covered by a more specific code.
 
 ---

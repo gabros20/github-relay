@@ -24,6 +24,7 @@ describe('generated skill.ts', () => {
 
   test('documents every implemented command and marks milestone-B ones as roadmap', () => {
     for (const cmd of [
+      'plan',
       'search',
       'batch',
       'hydrate',
@@ -39,7 +40,6 @@ describe('generated skill.ts', () => {
       expect(githubRelaySkill).toContain(`### \`${cmd}\``);
     }
     expect(githubRelaySkill).toContain('### Roadmap (v0.1 milestone B');
-    expect(githubRelaySkill).toContain('`plan`');
     expect(githubRelaySkill).toContain('`code`');
     expect(githubRelaySkill).toContain('`health`');
   });
