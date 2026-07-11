@@ -10,6 +10,7 @@ import { searchOptsFromArgs } from '../src/commands/search.ts';
 import {
   BATCH_INPUT,
   DIGEST_INPUT,
+  PLAN_INPUT,
   RANK_INPUT,
   SEARCH_INPUT,
   buildBatchArgv,
@@ -19,6 +20,7 @@ import {
   buildDoctorArgv,
   buildEnrichArgv,
   buildHydrateArgv,
+  buildPlanArgv,
   buildRankArgv,
   buildReadArgv,
   buildSearchArgv,
@@ -38,7 +40,7 @@ const fakeSources = {} as Sources;
 const cache = createCache();
 
 describe('implementedCommands', () => {
-  test('includes exactly the 11 milestone-A commands', () => {
+  test('includes exactly the 12 implemented commands (milestone A + plan, task 9)', () => {
     const names = implementedCommands()
       .map((c) => c.name)
       .sort();
@@ -51,6 +53,7 @@ describe('implementedCommands', () => {
         'doctor',
         'enrich',
         'hydrate',
+        'plan',
         'rank',
         'read',
         'search',
@@ -59,11 +62,42 @@ describe('implementedCommands', () => {
     );
   });
 
-  test('excludes the milestone-B roadmap commands (plan/code/health)', () => {
+  test('excludes the still-milestone-B roadmap commands (code/health)', () => {
     const names = implementedCommands().map((c) => c.name);
-    expect(names).not.toContain('plan');
     expect(names).not.toContain('code');
     expect(names).not.toContain('health');
+  });
+});
+
+describe('argv builders — plan', () => {
+  test('flags come first, then "--", then the slices verbatim', () => {
+    const argv = buildPlanArgv({ slices: ['topic:markdown', 'topic:notes'] });
+    expect(argv).toEqual(['plan', '--', 'topic:markdown', 'topic:notes']);
+  });
+
+  test('probe/shard/out map onto their flags, all before "--"', () => {
+    const argv = buildPlanArgv({
+      slices: ['topic:markdown'],
+      probe: true,
+      shard: 'created',
+      out: 'queries.txt',
+    });
+    expect(argv).toEqual([
+      'plan',
+      '--probe',
+      '--shard',
+      'created',
+      '--out',
+      'queries.txt',
+      '--',
+      'topic:markdown',
+    ]);
+  });
+
+  test('a slice that itself starts with "--" survives parseArgs intact', () => {
+    const argv = buildPlanArgv({ slices: ['--weird-slice'] });
+    const parsed = parseArgs(argv);
+    expect(parsed.positionals).toEqual(['--weird-slice']);
   });
 });
 
@@ -277,6 +311,18 @@ describe('argv builders — digest/budget/doctor/cache', () => {
       'clear',
       '--confirm',
     ]);
+  });
+});
+
+describe('PLAN_INPUT — slices required, out optional', () => {
+  test('rejects an empty slices array', () => {
+    const result = z.object(PLAN_INPUT).safeParse({ slices: [] });
+    expect(result.success).toBe(false);
+  });
+
+  test('accepts slices with no out/probe/shard (offline validation is the default)', () => {
+    const result = z.object(PLAN_INPUT).safeParse({ slices: ['topic:markdown'] });
+    expect(result.success).toBe(true);
   });
 });
 

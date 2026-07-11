@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // ─── github-relay-mcp MCP shim ────────────────────────────────────────────
 // Thin @modelcontextprotocol/sdk stdio server exposing one tool per
-// IMPLEMENTED command (registry-driven — plan/code/health are milestone B
-// roadmap items, registry-listed but excluded from the MCP surface). Zero
+// IMPLEMENTED command — IMPLEMENTED_COMMAND_NAMES below is a hardcoded list,
+// NOT derived from the registry, so it must be updated by hand whenever a
+// command ships (code/health, still milestone B roadmap, are registry-listed
+// but excluded from the MCP surface until then). Zero
 // business logic: each tool builds a CLI argv array and calls the SAME
 // run() path the CLI dispatches through (forced --quiet so no stderr
 // progress leaks into the stdio transport, forced --compact for the
@@ -41,6 +43,7 @@ function getCache(): Cache {
 // ── implemented-command filter (registry-driven) ──────────────────────────
 
 const IMPLEMENTED_COMMAND_NAMES = new Set([
+  'plan',
   'search',
   'batch',
   'hydrate',
@@ -55,7 +58,7 @@ const IMPLEMENTED_COMMAND_NAMES = new Set([
 ]);
 
 /**
- * Only the registered commands that actually dispatch. plan/code/health are
+ * Only the registered commands that actually dispatch. code/health are
  * milestone B (design §10) — registry-listed for CLI help/skill-generation
  * completeness, but they'd only ever return UNKNOWN_COMMAND ("not yet
  * implemented") over MCP, so they're filtered out of the tool surface here
@@ -93,6 +96,20 @@ function pushBool(argv: string[], name: string, present: unknown): void {
 function pushRepeatable(argv: string[], name: string, values: unknown): void {
   if (!Array.isArray(values)) return;
   for (const v of values) argv.push(`--${name}`, String(v));
+}
+
+export function buildPlanArgv(args: ToolArgs): string[] {
+  // Flags first, then "--", then the slices verbatim — same "--" sentinel
+  // reasoning as buildSearchArgv/buildRankArgv: a slice built from a
+  // stars:/created: qualifier can itself start with "--" in principle, and
+  // must never be misread as a flag attempt.
+  const slices = Array.isArray(args.slices) ? args.slices.map(String) : [];
+  const argv = ['plan'];
+  pushBool(argv, 'probe', args.probe);
+  pushFlag(argv, 'shard', args.shard);
+  pushFlag(argv, 'out', args.out);
+  argv.push('--', ...slices);
+  return argv;
 }
 
 export function buildSearchArgv(args: ToolArgs): string[] {
@@ -211,6 +228,28 @@ const SOURCE_ENUM = z.enum(['gh', 'rest', 'trending']);
 const SORT_ENUM = z.enum(['stars', 'updated']);
 const PROFILE_ENUM = z.enum(['build-on', 'dissect', 'ideas']);
 const CACHE_SUBCOMMAND_ENUM = z.enum(['stats', 'clear', 'gc']);
+const SHARD_ENUM = z.enum(['stars', 'created']);
+
+export const PLAN_INPUT = {
+  slices: z
+    .array(z.string())
+    .min(1)
+    .describe('query shards to validate (and optionally probe) before running search/batch'),
+  // No `dry` flag over MCP: the default (no `probe`) is already the offline,
+  // zero-network validation `--dry` aliases on the CLI, so there's nothing
+  // extra for an agent-facing tool to opt into.
+  probe: z
+    .boolean()
+    .describe(
+      'COSTS POINTS: 1 GraphQL point per slice, plus 1 more per auto-shard re-probe when a ' +
+        'slice exceeds the 1,000-result cap. Omit/false to validate offline for free.',
+    )
+    .optional(),
+  shard: SHARD_ENUM.describe(
+    'dimension to auto-shard on when --probe finds >1,000 results (default stars)',
+  ).optional(),
+  out: z.string().describe('queries.txt path — batch-compatible, one query per line').optional(),
+};
 
 export const SEARCH_INPUT = {
   query: z
@@ -391,6 +430,12 @@ function buildServer(): McpServer {
   // biome-ignore lint/suspicious/noExplicitAny: dynamic require of package.json
   const pkg = require('../package.json') as any;
   const server = new McpServer({ name: 'github-relay-mcp', version: String(pkg.version) });
+
+  server.registerTool(
+    'plan',
+    { description: describe('plan'), inputSchema: PLAN_INPUT },
+    async (args) => executeTool(buildPlanArgv(args)),
+  );
 
   server.registerTool(
     'search',
