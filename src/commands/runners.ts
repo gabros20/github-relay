@@ -26,8 +26,15 @@ function hintFor(code: ErrorCode, message: string): string | undefined {
       return 'this signal degrades to nodata; other signals still apply';
     case 'CONFIRMATION_REQUIRED':
       return 're-run with --confirm to proceed';
-    case 'NOT_FOUND':
     case 'INVALID_INPUT':
+      // code's client-side NL-rejection gate (design §3 item 5) is the one
+      // INVALID_INPUT that carries a specific, code-generated hint — same
+      // message-sniffing pattern as RESULT_CAP above, since EngineError
+      // itself has no hint field of its own.
+      return message.includes('looks like natural language')
+        ? 'code lanes need code tokens; use search for concepts'
+        : undefined;
+    case 'NOT_FOUND':
     case 'UNKNOWN_COMMAND':
     case 'FETCH_FAILED':
       return undefined;
