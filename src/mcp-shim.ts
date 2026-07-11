@@ -3,7 +3,7 @@
 // Thin @modelcontextprotocol/sdk stdio server exposing one tool per
 // IMPLEMENTED command — IMPLEMENTED_COMMAND_NAMES below is a hardcoded list,
 // NOT derived from the registry, so it must be updated by hand whenever a
-// command ships (code/health, still milestone B roadmap, are registry-listed
+// command ships (health, still milestone B roadmap, is registry-listed
 // but excluded from the MCP surface until then). Zero
 // business logic: each tool builds a CLI argv array and calls the SAME
 // run() path the CLI dispatches through (forced --quiet so no stderr
@@ -47,6 +47,7 @@ const IMPLEMENTED_COMMAND_NAMES = new Set([
   'search',
   'batch',
   'hydrate',
+  'code',
   'enrich',
   'rank',
   'skim',
@@ -147,6 +148,21 @@ export function buildHydrateArgv(args: ToolArgs): string[] {
   const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];
   const argv = ['hydrate', ...ids];
   pushFlag(argv, 'out', args.out);
+  return argv;
+}
+
+export function buildCodeArgv(args: ToolArgs): string[] {
+  // Flags first, then "--", then the pattern verbatim — same "--" sentinel
+  // reasoning as buildSearchArgv: a code pattern is exactly the case that
+  // motivated the sentinel in the first place (dashes/symbols are the norm
+  // for real code tokens, e.g. "--force push workflows" or "(?s)useEffect\\(").
+  const argv = ['code'];
+  pushRepeatable(argv, 'lang', args.lang);
+  pushFlag(argv, 'repo', args.repo);
+  pushFlag(argv, 'path', args.path);
+  pushFlag(argv, 'limit', args.limit);
+  pushFlag(argv, 'out', args.out);
+  argv.push('--', String(args.pattern ?? ''));
   return argv;
 }
 
@@ -292,6 +308,29 @@ export const HYDRATE_INPUT = {
   out: z
     .string()
     .describe('corpus.json path to merge into (omit to get compact rows back)')
+    .optional(),
+};
+
+export const CODE_INPUT = {
+  pattern: z
+    .string()
+    .describe(
+      "a literal code token or regex pattern (grep-style), e.g. 'useState(', 'import React from', " +
+        "'(?s)try {.*await' — NOT natural language; a prose question is rejected with INVALID_INPUT",
+    ),
+  lang: z.array(z.string()).describe("filter by language, e.g. ['TypeScript', 'TSX']").optional(),
+  repo: z
+    .string()
+    .describe("filter by owner/repo, partial match allowed, e.g. 'facebook/react' or 'vercel/'")
+    .optional(),
+  path: z.string().describe('filter by file path, partial match allowed').optional(),
+  limit: z.number().int().positive().max(100).describe('default 20, max 100').optional(),
+  out: z
+    .string()
+    .describe(
+      'corpus.json path to merge minimal source:"code" rows into (owner/repo + license only; ' +
+        "omit to get hit rows back — full enrichment is hydrate/enrich's job)",
+    )
     .optional(),
 };
 
@@ -465,6 +504,12 @@ function buildServer(): McpServer {
     'hydrate',
     { description: describe('hydrate'), inputSchema: HYDRATE_INPUT },
     async (args) => executeTool(buildHydrateArgv(args)),
+  );
+
+  server.registerTool(
+    'code',
+    { description: describe('code'), inputSchema: CODE_INPUT },
+    async (args) => executeTool(buildCodeArgv(args)),
   );
 
   server.registerTool(

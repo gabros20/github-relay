@@ -9,6 +9,7 @@ import { parseArgs } from '../src/cli.ts';
 import { searchOptsFromArgs } from '../src/commands/search.ts';
 import {
   BATCH_INPUT,
+  CODE_INPUT,
   DIGEST_INPUT,
   PLAN_INPUT,
   RANK_INPUT,
@@ -16,6 +17,7 @@ import {
   buildBatchArgv,
   buildBudgetArgv,
   buildCacheArgv,
+  buildCodeArgv,
   buildDigestArgv,
   buildDoctorArgv,
   buildEnrichArgv,
@@ -40,7 +42,7 @@ const fakeSources = {} as Sources;
 const cache = createCache();
 
 describe('implementedCommands', () => {
-  test('includes exactly the 12 implemented commands (milestone A + plan, task 9)', () => {
+  test('includes exactly the 13 implemented commands (milestone A + plan/code, tasks 9-10)', () => {
     const names = implementedCommands()
       .map((c) => c.name)
       .sort();
@@ -49,6 +51,7 @@ describe('implementedCommands', () => {
         'batch',
         'budget',
         'cache',
+        'code',
         'digest',
         'doctor',
         'enrich',
@@ -62,9 +65,8 @@ describe('implementedCommands', () => {
     );
   });
 
-  test('excludes the still-milestone-B roadmap commands (code/health)', () => {
+  test('excludes the still-milestone-B roadmap command (health)', () => {
     const names = implementedCommands().map((c) => c.name);
-    expect(names).not.toContain('code');
     expect(names).not.toContain('health');
   });
 });
@@ -155,6 +157,65 @@ describe('argv builders — search', () => {
     const parsed = parseArgs(argv);
     expect(parsed.command).toBe('search');
     expect(searchOptsFromArgs(parsed).query).toBe('--force push workflows');
+  });
+});
+
+describe('argv builders — code', () => {
+  test('flags come first, then "--", then the pattern verbatim', () => {
+    const argv = buildCodeArgv({ pattern: 'useState(' });
+    expect(argv).toEqual(['code', '--', 'useState(']);
+  });
+
+  test('folds repeatable lang and scalar repo/path/limit/out in, all before "--"', () => {
+    const argv = buildCodeArgv({
+      pattern: 'useState(',
+      lang: ['TypeScript', 'TSX'],
+      repo: 'facebook/react',
+      path: 'src/',
+      limit: 10,
+      out: 'corpus.json',
+    });
+    expect(argv).toEqual([
+      'code',
+      '--lang',
+      'TypeScript',
+      '--lang',
+      'TSX',
+      '--repo',
+      'facebook/react',
+      '--path',
+      'src/',
+      '--limit',
+      '10',
+      '--out',
+      'corpus.json',
+      '--',
+      'useState(',
+    ]);
+  });
+
+  test('a pattern that itself starts with "--" survives parseArgs intact', () => {
+    const argv = buildCodeArgv({ pattern: '--force push workflows' });
+    const parsed = parseArgs(argv);
+    expect(parsed.command).toBe('code');
+    expect(parsed.positionals.join(' ')).toBe('--force push workflows');
+  });
+});
+
+describe('CODE_INPUT — pattern required, everything else optional (out is NOT required, unlike search/batch/digest)', () => {
+  test('rejects a missing pattern', () => {
+    expect(z.object(CODE_INPUT).safeParse({}).success).toBe(false);
+  });
+
+  test('accepts a bare pattern with no other fields', () => {
+    expect(z.object(CODE_INPUT).safeParse({ pattern: 'useState(' }).success).toBe(true);
+  });
+
+  test('limit is capped at 100', () => {
+    expect(z.object(CODE_INPUT).safeParse({ pattern: 'useState(', limit: 100 }).success).toBe(true);
+    expect(z.object(CODE_INPUT).safeParse({ pattern: 'useState(', limit: 101 }).success).toBe(
+      false,
+    );
   });
 });
 
