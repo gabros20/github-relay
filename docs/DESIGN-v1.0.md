@@ -132,7 +132,7 @@ Headroom >250 sessions/hr. The binding constraints are NOT points: (a) GraphQL 1
 
 **Profiles (weights sum 100):**
 - `build-on` (default): A25 B20 C15 D10 E10 F10 L10 (permissive=10, weak=7, strong=4, none=1 — reported, never excluded).
-- `dissect`: E40 Structure15 (source-file share, tree depth sanity, diskUsage 1MB..500MB band, from skim) A5 B10 C10 D5 F10 L0.
+- `dissect`: E40 Structure20 (source-file share, tree depth sanity, diskUsage 1MB..500MB band, from skim) A5 B10 C10 D5 F10 L0. *(Erratum 2026-07-11: panel text said Structure15, summing to 95; corrected to 20 so every profile sums to 100 — Structure is the dissect-specific group, so it absorbs the gap.)*
 - `ideas`: Recency30 (created<18mo + push recency) F25 E20 Novelty15 (not-fork, not-template, low topic overlap with corpus siblings) B+C10 L0.
 
 **Missing data = renormalization + honesty, never zero:** absent groups renormalize remaining weights, appear in `nodata[]`, and every row carries **`coverage:"5/7"`** (both skeptics' demand) — app-type repos (the macOS-editor flagship) are never crushed for lacking dependents, and a 4/7 score is visibly not a 7/7 score.

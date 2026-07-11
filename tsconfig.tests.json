@@ -1,0 +1,15 @@
+{
+  // Closes the ledger gap noted since task 1: the root tsconfig excludes
+  // tests/ entirely, so `bun test` (which transpiles but never type-checks)
+  // was the only thing ever looking at test files. This config extends the
+  // root strict settings over src/ + tests/ together, noEmit — CI runs it as
+  // a distinct step from `tsc --noEmit` (which stays scoped to src/ via the
+  // root config's own include/exclude, unaffected by this file).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

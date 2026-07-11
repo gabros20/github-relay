@@ -1,0 +1,79 @@
+{
+  "name": "github-relay-mcp",
+  "version": "0.1.0",
+  "description": "Research GitHub, not read GitHub — a zero-paid-API, LLM-free Bun/TypeScript CLI (ghrelay) + MCP shim + Claude Code skill that turns intent into a ranked, explainable, star-skeptical shortlist of repos.",
+  "type": "module",
+  "bin": {
+    "ghrelay": "./dist/cli.js",
+    "github-relay-mcp": "./dist/mcp-shim.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE", ".claude/skills/github-relay/SKILL.md"],
+  "scripts": {
+    "generate": "bun run scripts/generate-skill.ts",
+    "dev": "bun run generate && bun run src/cli-entry.ts",
+    "build": "bun run generate && tsup",
+    "typecheck": "bun run generate && tsc --noEmit",
+    "typecheck:tests": "bun run generate && tsc --noEmit -p tsconfig.tests.json",
+    "lint": "bun run generate && biome check src/ tests/",
+    "lint:fix": "bun run generate && biome check --write src/ tests/",
+    "format": "biome format --write src/ tests/",
+    "test": "bun run generate && bun test",
+    "test:watch": "bun run generate && bun test --watch",
+    "test:coverage": "bun run generate && bun test --coverage",
+    "smoke:mcp": "bun run ./scripts/mcp-smoke.ts",
+    "smoke:node": "node ./scripts/node-smoke.mjs",
+    "check": "bun run typecheck && bun run typecheck:tests && bun run lint && bun test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.0",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^10.3.0",
+    "@semantic-release/npm": "^12.0.0",
+    "@semantic-release/release-notes-generator": "^14.0.0",
+    "@types/bun": "^1.1.0",
+    "semantic-release": "^24.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.3.0"
+  },
+  "keywords": [
+    "github",
+    "search",
+    "mcp",
+    "cli",
+    "claude",
+    "agent",
+    "code-execution",
+    "deep-research"
+  ],
+  "author": "Tamas Gabor",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gabros20/github-relay.git"
+  },
+  "homepage": "https://github.com/gabros20/github-relay#readme",
+  "bugs": {
+    "url": "https://github.com/gabros20/github-relay/issues"
+  },
+  "trustedDependencies": ["@biomejs/biome", "esbuild"]
+}
