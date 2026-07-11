@@ -1,8 +1,9 @@
-#!/usr/bin/env node
 // ─── ghrelay CLI ──────────────────────────────────────────────────────────
 // Parses args, dispatches a command against injected Sources, prints a JSON
 // envelope to stdout. `run()` is pure and testable: it never touches
-// process.exit itself — main() below owns that translation.
+// process.exit itself — main() below owns that translation. This module is a
+// pure library surface with NO top-level side effects (see the note below
+// main()) — the actual `ghrelay` bin entry point is src/cli-entry.ts.
 import { type Cache, createCache } from './cache/index.ts';
 import { batchOptsFromArgs, runBatch } from './commands/batch.ts';
 import { budgetOptsFromArgs, runBudget } from './commands/budget.ts';
@@ -18,7 +19,6 @@ import { COMMANDS } from './commands/registry.ts';
 import { guard } from './commands/runners.ts';
 import { runSearch, searchOptsFromArgs } from './commands/search.ts';
 import { runSkim, skimOptsFromArgs } from './commands/skim.ts';
-import { shouldRunAsEntry } from './entry.ts';
 import { err, toJson } from './output.ts';
 import { type Sources, createSources } from './sources/index.ts';
 import type { Envelope } from './types.ts';
@@ -319,12 +319,13 @@ export async function main(): Promise<void> {
   process.exitCode = exitCode;
 }
 
-// Fail-loud: when the runtime gives no definitive answer and the invocation
-// looks like our binary, run anyway (after a stderr warning) — never silently
-// exit 0 under the npm bin symlink.
-const entry = shouldRunAsEntry(process.argv[1], import.meta.url, import.meta.main, [
-  'ghrelay',
-  'cli.js',
-]);
-if (entry.warning !== undefined) process.stderr.write(`${entry.warning}\n`);
-if (entry.run) void main();
+// No self-invoking entry guard here — this module is a pure library surface
+// (src/index.ts re-exports it, and src/mcp-shim.ts imports `run` directly).
+// tsup's `splitting:false` inlines a whole imported module's top-level code
+// into EVERY bundle that imports it, and `import.meta.main` is true for the
+// bundle's actual entry file regardless of which source module the inlined
+// code came from — so a self-invocation here would have also fired when
+// dist/mcp-shim.js or dist/index.js were the ones actually executed (proved
+// live: it printed the CLI's plain-text help onto the MCP stdio channel
+// before the JSON-RPC handshake). The real bin-invocation decision lives in
+// src/cli-entry.ts, the ONLY module tsup treats as the `cli` entry point.
