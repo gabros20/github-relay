@@ -6,7 +6,9 @@
 // service) with each individually raced against a timeout; the tradeoff is a
 // worst-case total time of sum(timeouts) rather than max(timeouts), so
 // DEFAULT_CHECK_TIMEOUT_MS is sized to keep that worst case under the
-// design's <15s budget even if every one of the 7 checks times out.
+// design's <15s budget even if every one of the 9 checks times out (task 10
+// added grepApp + grepAppBreaker, re-tightening the per-check budget from
+// the original 7-check/2000ms sizing).
 import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -18,9 +20,10 @@ import type { DepsDev } from '../sources/depsdev.ts';
 import type { Ecosystems } from '../sources/ecosystems.ts';
 import type { GhGraphql } from '../sources/gh-graphql.ts';
 import type { GhRest } from '../sources/gh-rest.ts';
+import type { GrepApp } from '../sources/grep-app.ts';
 import { EngineError } from '../types.ts';
 
-const DEFAULT_CHECK_TIMEOUT_MS = 2000; // 7 checks * 2s worst case = 14s < design's 15s budget
+const DEFAULT_CHECK_TIMEOUT_MS = 1500; // 9 checks * 1.5s worst case = 13.5s < design's 15s budget
 
 // A small, well-known public repo used purely as a reachability/feature
 // probe target — never written to, never assumed to carry real research
@@ -28,6 +31,11 @@ const DEFAULT_CHECK_TIMEOUT_MS = 2000; // 7 checks * 2s worst case = 14s < desig
 const PROBE_OWNER = 'octocat';
 const PROBE_REPO = 'Hello-World';
 const PROBE_FULL_NAME = `${PROBE_OWNER}/${PROBE_REPO}`;
+
+// grep.app is a code-token search, not a keyword search — "license" is a
+// single, common, cheap-to-index token, never natural language, so it can't
+// ever trip the code command's own NL-rejection heuristic.
+const GREP_APP_PROBE_QUERY = 'license';
 
 const STARRED_AT_PROBE_QUERY = `query {
   repository(owner: "${PROBE_OWNER}", name: "${PROBE_REPO}") {
@@ -46,6 +54,7 @@ export interface DoctorSources {
   ghGraphql: Pick<GhGraphql, 'graphql'>;
   ecosystems: Pick<Ecosystems, 'repo'>;
   depsdev: Pick<DepsDev, 'project'>;
+  grepApp: Pick<GrepApp, 'search'>;
 }
 
 export interface DoctorDeps {
@@ -202,6 +211,15 @@ export async function runDoctor(
         ),
   );
 
+  // task 10: this adapter's own doctor row, since code.ts owns the adapter.
+  checks.push(
+    offline
+      ? skippedCheck('grepApp')
+      : await runCheck('grepApp', timeoutMs, () =>
+          reachabilityCheck(() => sources.grepApp.search({ query: GREP_APP_PROBE_QUERY })),
+        ),
+  );
+
   // Local checks (cache dir, git binary) always run, even --offline.
   checks.push(
     await runCheck('cacheDir', timeoutMs, async () => {
@@ -230,6 +248,22 @@ export async function runDoctor(
           await sources.ghGraphql.graphql(STARRED_AT_PROBE_QUERY);
           return { ok: true, detail: 'available' };
         }),
+  );
+
+  // Local, always-on (even --offline) — the code command's circuit breaker
+  // is persisted state, not a network probe, and reading it back is never a
+  // failure in its own right (an open breaker is DATA the agent should see,
+  // same "failing check = data" contract as everything else in doctor).
+  checks.push(
+    await runCheck('grepAppBreaker', timeoutMs, async () => {
+      const breaker = cache.budget.load().grepApp;
+      if (!breaker) return { ok: true, detail: 'closed (never tripped)' };
+      const retry = breaker.retryAt ? `, retry at ${breaker.retryAt}` : '';
+      return {
+        ok: true,
+        detail: `${breaker.breakerState} (${breaker.consecutiveFailures} consecutive failures${retry})`,
+      };
+    }),
   );
 
   const healthy = checks.every((c) => c.ok);

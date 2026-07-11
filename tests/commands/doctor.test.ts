@@ -26,6 +26,7 @@ function happySources(): DoctorSources {
     ghGraphql: { graphql: async <T = unknown>() => ({}) as T },
     ecosystems: { repo: async () => ({}) },
     depsdev: { project: async () => ({}) },
+    grepApp: { search: async () => [] },
   };
 }
 
@@ -63,11 +64,13 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
       'graphql',
       'ecosystems',
       'depsdev',
+      'grepApp',
       'cacheDir',
       'git',
       'starredAt',
+      'grepAppBreaker',
     ]);
-    expect(result.summary).toBe('7/7 checks ok');
+    expect(result.summary).toBe('9/9 checks ok');
   });
 
   test('EVERY check failing still returns ok:true at the envelope level — healthy:false, never throws', async () => {
@@ -92,6 +95,11 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
           throw new EngineError('SOURCE_DOWN', 'deps.dev down');
         },
       },
+      grepApp: {
+        search: async () => {
+          throw new EngineError('SOURCE_DOWN', 'grep.app down');
+        },
+      },
     };
     const deps: DoctorDeps = {
       exec: async () => ({ stdout: '', exitCode: 1 }),
@@ -108,8 +116,14 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
 
     const result = await runDoctor(failingSources, brokenCache, {}, deps);
     expect(result.healthy).toBe(false);
-    expect(result.checks.every((c) => c.ok === false)).toBe(true);
-    expect(result.summary).toBe('0/7 checks ok');
+    // grepAppBreaker is a purely local, always-succeeds informational row
+    // (design: reading persisted breaker state back is never itself a
+    // failure — the "failing check = data" contract, same as everything
+    // else in doctor) — every OTHER check genuinely fails here.
+    const other = result.checks.filter((c) => c.name !== 'grepAppBreaker');
+    expect(other.every((c) => c.ok === false)).toBe(true);
+    expect(result.checks.find((c) => c.name === 'grepAppBreaker')?.ok).toBe(true);
+    expect(result.summary).toBe('1/9 checks ok');
   });
 
   test('a single failing check does not abort the rest — later checks still run and can pass', async () => {
@@ -141,7 +155,7 @@ describe('runDoctor — per-check timeout', () => {
     expect(byName.get('graphql')?.ok).toBe(false);
     expect(byName.get('graphql')?.detail).toContain('timed out');
     // Every other check still ran to completion.
-    expect(result.checks).toHaveLength(7);
+    expect(result.checks).toHaveLength(9);
   });
 });
 
@@ -171,6 +185,11 @@ describe('runDoctor — --offline', () => {
           throw new Error('must not be called offline');
         },
       },
+      grepApp: {
+        search: async () => {
+          throw new Error('must not be called offline');
+        },
+      },
     };
     const result = await runDoctor(sources, cache, { offline: true }, happyDeps());
     const byName = new Map(result.checks.map((c) => [c.name, c]));
@@ -178,12 +197,17 @@ describe('runDoctor — --offline', () => {
     expect(byName.get('graphql')?.ok).toBe(true);
     expect(byName.get('ecosystems')?.skipped).toBe(true);
     expect(byName.get('depsdev')?.skipped).toBe(true);
+    expect(byName.get('grepApp')?.skipped).toBe(true);
     expect(byName.get('starredAt')?.skipped).toBe(true);
     expect(byName.get('token')?.skipped).toBeUndefined();
     expect(byName.get('token')?.ok).toBe(true);
     expect(byName.get('token')?.detail).toBe('token present');
     expect(byName.get('cacheDir')?.ok).toBe(true);
     expect(byName.get('git')?.ok).toBe(true);
+    // grepAppBreaker is local (reads cache.budget), not a network check — it
+    // still runs, and still passes, even --offline.
+    expect(byName.get('grepAppBreaker')?.skipped).toBeUndefined();
+    expect(byName.get('grepAppBreaker')?.ok).toBe(true);
     expect(result.healthy).toBe(true);
   });
 
@@ -270,6 +294,63 @@ describe('runDoctor — third-party reachability semantics', () => {
     const ecosystems = result.checks.find((c) => c.name === 'ecosystems');
     expect(ecosystems?.ok).toBe(false);
     expect(ecosystems?.detail).toContain('unreachable');
+  });
+
+  test('grep.app reachable (zero hits still counts) passes the check', async () => {
+    const cache = createCache(dir);
+    const sources = happySources();
+    sources.grepApp = { search: async () => [] };
+    const result = await runDoctor(sources, cache, {}, happyDeps());
+    expect(result.checks.find((c) => c.name === 'grepApp')?.ok).toBe(true);
+  });
+
+  test('grep.app SOURCE_DOWN fails only the grepApp check', async () => {
+    const cache = createCache(dir);
+    const sources = happySources();
+    sources.grepApp = {
+      search: async () => {
+        throw new EngineError('SOURCE_DOWN', 'grep.app unreachable');
+      },
+    };
+    const result = await runDoctor(sources, cache, {}, happyDeps());
+    const grepApp = result.checks.find((c) => c.name === 'grepApp');
+    expect(grepApp?.ok).toBe(false);
+    expect(grepApp?.detail).toContain('unreachable');
+    expect(result.healthy).toBe(false);
+    const other = result.checks.filter((c) => c.name !== 'grepApp');
+    expect(other.every((c) => c.ok)).toBe(true);
+  });
+});
+
+describe('runDoctor — grepAppBreaker (local, always runs, informational)', () => {
+  test('no breaker state persisted yet reports "closed (never tripped)"', async () => {
+    const cache = createCache(dir);
+    const result = await runDoctor(happySources(), cache, {}, happyDeps());
+    const row = result.checks.find((c) => c.name === 'grepAppBreaker');
+    expect(row?.ok).toBe(true);
+    expect(row?.detail).toBe('closed (never tripped)');
+  });
+
+  test('an open breaker with a retryAt is reported verbatim, still ok:true', async () => {
+    const cache = createCache(dir);
+    cache.budget.updateGrepAppBreaker({
+      breakerState: 'open',
+      consecutiveFailures: 2,
+      retryAt: '2026-07-11T00:05:00.000Z',
+    });
+    const result = await runDoctor(happySources(), cache, {}, happyDeps());
+    const row = result.checks.find((c) => c.name === 'grepAppBreaker');
+    expect(row?.ok).toBe(true);
+    expect(row?.detail).toBe('open (2 consecutive failures, retry at 2026-07-11T00:05:00.000Z)');
+  });
+
+  test('reading breaker state back is not itself a network check — it still runs and passes --offline', async () => {
+    const cache = createCache(dir);
+    cache.budget.updateGrepAppBreaker({ breakerState: 'closed', consecutiveFailures: 1 });
+    const result = await runDoctor(happySources(), cache, { offline: true }, happyDeps());
+    const row = result.checks.find((c) => c.name === 'grepAppBreaker');
+    expect(row?.skipped).toBeUndefined();
+    expect(row?.detail).toBe('closed (1 consecutive failures)');
   });
 });
 
