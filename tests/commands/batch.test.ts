@@ -105,6 +105,19 @@ describe('runBatch — validation (no network)', () => {
     expect(result.queries).toBe(2);
     expect(ghGraphql.calls.map((c) => c.vars?.q)).toEqual(['topic:markdown', 'topic:notes']);
   });
+
+  test('CRLF-terminated query lines are trimmed cleanly, not left with a trailing \\r', async () => {
+    writeFileSync(file, 'topic:markdown\r\ntopic:notes\r\n');
+    const ghGraphql = fakeGhGraphql(() => ({ search: { repositoryCount: 0, nodes: [] } }));
+    const cache = createCache(dir);
+    const result = await runBatch({ ghGraphql }, cache, {
+      file,
+      out: join(dir, 'c.json'),
+      delay: '0',
+    });
+    expect(result.queries).toBe(2);
+    expect(ghGraphql.calls.map((c) => c.vars?.q)).toEqual(['topic:markdown', 'topic:notes']);
+  });
 });
 
 describe('runBatch — --dry-run (zero network)', () => {
@@ -193,6 +206,26 @@ describe('runBatch — strict serialization + delay', () => {
     const cache = createCache(dir);
     await runBatch({ ghGraphql }, cache, { file, out: join(dir, 'c.json') }, { sleep });
     expect(waits).toEqual([9000]);
+  });
+
+  test('a RATE_LIMITED error with no retryAfterMs falls back to the ordinary delay, never undefined/NaN', async () => {
+    writeFileSync(file, 'q1\nq2\n');
+    let call = 0;
+    const ghGraphql = fakeGhGraphql(() => {
+      call++;
+      // No 4th (retryAfterMs) constructor arg — EngineError leaves retryAfterMs undefined.
+      if (call === 1) throw new EngineError('RATE_LIMITED', 'limited');
+      return { search: { repositoryCount: 0, nodes: [] } };
+    });
+    const { waits, sleep } = recordingSleep();
+    const cache = createCache(dir);
+    await runBatch(
+      { ghGraphql },
+      cache,
+      { file, out: join(dir, 'c.json'), delay: '1234' },
+      { sleep },
+    );
+    expect(waits).toEqual([1234]);
   });
 });
 

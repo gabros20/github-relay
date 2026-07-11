@@ -111,6 +111,17 @@ describe('runHydrate — stdin path (`-`)', () => {
     expect(ghGraphql.calls[0]?.names).toEqual(['octocat/repo-a', 'octocat/repo-b']);
   });
 
+  test('CRLF-terminated stdin lines are trimmed cleanly, not left with a trailing \\r', async () => {
+    const cache = createCache(dir);
+    const ghGraphql = fakeGhGraphql((names) =>
+      names.map((name) => ({ name, data: fixtureNode({ nameWithOwner: name }) })),
+    );
+    const stdin = 'octocat/repo-a\r\noctocat/repo-b\r\n';
+    const result = await runHydrate({ ghGraphql }, cache, { ids: ['-'] }, stdin);
+    expect(result.requested).toBe(2);
+    expect(ghGraphql.calls[0]?.names).toEqual(['octocat/repo-a', 'octocat/repo-b']);
+  });
+
   test('positionals and `-` can combine', async () => {
     const cache = createCache(dir);
     const ghGraphql = fakeGhGraphql((names) =>

@@ -161,6 +161,28 @@ describe('graphql — error mapping', () => {
     const err = (await gh.graphql('q').catch((e) => e)) as EngineError;
     expect(err).toBeInstanceOf(EngineError);
   });
+
+  test('a node-limit/complexity error message → QUERY_TOO_COMPLEX, not a generic FETCH_FAILED', async () => {
+    const { fetchImpl } = fakeFetch(() =>
+      jsonResponse({
+        data: null,
+        errors: [{ type: 'MAX_NODE_LIMIT_EXCEEDED', message: 'Query exceeds max node limit' }],
+      }),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh.graphql('q').catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    expect(err.code).toBe('QUERY_TOO_COMPLEX');
+  });
+
+  test('a "too complex"-worded error also maps to QUERY_TOO_COMPLEX (message-content match, not just type)', async () => {
+    const { fetchImpl } = fakeFetch(() =>
+      jsonResponse({ data: null, errors: [{ message: 'This query is too complex to execute' }] }),
+    );
+    const gh = createGhGraphql({ fetchImpl, getToken });
+    const err = (await gh.graphql('q').catch((e) => e)) as EngineError;
+    expect(err.code).toBe('QUERY_TOO_COMPLEX');
+  });
 });
 
 describe('batchRepositories — aliasing + partial errors', () => {
