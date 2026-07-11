@@ -274,6 +274,86 @@ describe('enrich — B-group fallback chain (fake sources)', () => {
   });
 });
 
+describe('enrich — B-chain resilience (fix wave 1: goodwill sources degrade, never abort)', () => {
+  test('a degradable ecosyste.ms failure (429→FETCH_FAILED) on one repo falls to deps.dev; all enrich, run completes', async () => {
+    const path = writeCorpus([bareRepo('acme/one'), bareRepo('acme/two'), bareRepo('acme/three')]);
+    const { sources } = fakeSources({
+      ecosystems: (fullName) => {
+        if (fullName === 'acme/two') throw new EngineError('FETCH_FAILED', 'ecosyste.ms 429');
+        return { dependent_repos_count: 800 };
+      },
+      packageVersions: () => ({
+        versions: [{ versionKey: { system: 'npm', name: 'two', version: '2.0.0' } }],
+      }),
+      dependents: () => ({ dependentCount: 640 }),
+    });
+    const cache = createCache(dir);
+    const result = await runEnrich(sources, cache, { in: path, ids: [] }, { now: NOW });
+    expect(result.enriched).toBe(3);
+    expect(result.failed).toEqual([]);
+    const repos = loadCorpus(path).repos;
+    const two = repos.find((r) => r.full_name === 'acme/two');
+    expect(two?.signals.dependents?.value).toBe(640);
+    expect(two?.signals.dependents?.source).toBe('deps.dev');
+    expect(repos.find((r) => r.full_name === 'acme/one')?.signals.dependentReposCount?.value).toBe(
+      800,
+    );
+  });
+
+  test('RATE_LIMITED from ecosyste.ms also degrades to the next rung', async () => {
+    const bSignals = await resolveBGroup(
+      fakeSources({
+        ecosystems: () => {
+          throw new EngineError('RATE_LIMITED', 'slow down', 429, 1000);
+        },
+        packageVersions: () => ({ versions: [] }),
+      }).sources,
+      'acme/app',
+      NOW(),
+      '2026-07-11T00:00:00Z',
+    );
+    expect(bSignals.packaged?.value).toBe(false); // reached deps.dev, which found no packages
+  });
+
+  test('an unexpected B-stage throw marks that repo failed, persists every prior success, run completes', async () => {
+    const path = writeCorpus([bareRepo('acme/one'), bareRepo('acme/two'), bareRepo('acme/three')]);
+    const { sources } = fakeSources({
+      ecosystems: () => {
+        throw new EngineError('NOT_FOUND', 'not indexed');
+      },
+      packageVersions: (_owner, repo) => {
+        if (repo === 'two') throw new Error('kaboom (unexpected non-EngineError)');
+        return { versions: [] }; // no packages → packaged:false
+      },
+    });
+    const cache = createCache(dir);
+    const result = await runEnrich(sources, cache, { in: path, ids: [] }, { now: NOW });
+    expect(result.enriched).toBe(3);
+    expect(result.failed.map((f) => f.id)).toContain('acme/two');
+    const repos = loadCorpus(path).repos;
+    // every GraphQL success persisted — including the repo whose B threw
+    for (const name of ['acme/one', 'acme/two', 'acme/three']) {
+      expect(repos.find((r) => r.full_name === name)?.signals.commits90d?.value).toBe(120);
+    }
+    // the non-throwing repos still got their B determination
+    expect(repos.find((r) => r.full_name === 'acme/one')?.signals.packaged?.value).toBe(false);
+  });
+
+  test('INVALID_INPUT from a B source stays loud — surfaced in failed[], never silently degraded', async () => {
+    const path = writeCorpus([bareRepo('acme/one')]);
+    const { sources } = fakeSources({
+      ecosystems: () => {
+        throw new EngineError('INVALID_INPUT', 'malformed request we constructed');
+      },
+    });
+    const cache = createCache(dir);
+    const result = await runEnrich(sources, cache, { in: path, ids: [] }, { now: NOW });
+    expect(result.failed[0]?.code).toBe('INVALID_INPUT');
+    // GraphQL success is still persisted despite the loud B failure
+    expect(loadCorpus(path).repos[0]?.signals.commits90d?.value).toBe(120);
+  });
+});
+
 describe('enrich — selection', () => {
   test('--top N enriches only the N highest-star unenriched rows', async () => {
     const repos = [

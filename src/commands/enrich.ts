@@ -206,8 +206,18 @@ function strField(obj: unknown, key: string): string | null {
   return typeof v === 'string' ? v : null;
 }
 
-function isSourceDownOrMissing(e: unknown): boolean {
-  return e instanceof EngineError && (e.code === 'SOURCE_DOWN' || e.code === 'NOT_FOUND');
+/**
+ * Whether a B-source failure should DEGRADE (fall to the next rung / nodata)
+ * rather than abort. Per design §12, the goodwill B sources are never
+ * load-bearing: ANY upstream failure they raise — SOURCE_DOWN, NOT_FOUND,
+ * RATE_LIMITED, FETCH_FAILED (a 429/malformed body from ecosyste.ms is routine)
+ * — degrades. The two exceptions propagate: INVALID_INPUT (a malformed request
+ * WE built — our bug, must stay loud) and any non-EngineError throw (truly
+ * unexpected). Both are then caught by the per-repo wrapper in runBStage so a
+ * single repo can never discard the whole run's GraphQL work.
+ */
+function isDegradable(e: unknown): boolean {
+  return e instanceof EngineError && e.code !== 'INVALID_INPUT';
 }
 
 /** Recent {pkg, version} coordinates from a deps.dev GetProjectPackageVersions response (last N). */
@@ -241,7 +251,7 @@ async function tryEcosystems(
   try {
     record = await ecosystems.repo(fullName);
   } catch (e) {
-    if (isSourceDownOrMissing(e)) return null;
+    if (isDegradable(e)) return null;
     throw e;
   }
   const dependents = numField(record, 'dependent_repos_count');
@@ -277,12 +287,13 @@ async function tryDepsDev(
   try {
     versions = recentVersions(await depsdev.projectPackageVersions(owner, name));
   } catch (e) {
+    // NOT_FOUND here is a determination, not a failure: the project publishes no
+    // packages → packaged:false. Any other degradable failure → B stays nodata
+    // with a visible marker. INVALID_INPUT / unexpected throws propagate.
     if (e instanceof EngineError && e.code === 'NOT_FOUND') {
       return { packaged: makeProv(false, 'deps.dev', fetchedAt) };
     }
-    if (e instanceof EngineError && e.code === 'SOURCE_DOWN') {
-      return { bSourceDown: makeProv(true, 'deps.dev', fetchedAt) };
-    }
+    if (isDegradable(e)) return { bSourceDown: makeProv(true, 'deps.dev', fetchedAt) };
     throw e;
   }
   if (versions.length === 0) return { packaged: makeProv(false, 'deps.dev', fetchedAt) };
@@ -293,7 +304,7 @@ async function tryDepsDev(
       const count = numField(await depsdev.dependents(pkg, version), 'dependentCount');
       if (count !== null && count > maxDependents) maxDependents = count;
     } catch (e) {
-      if (!isSourceDownOrMissing(e)) throw e; // a transient version lookup is skipped, not fatal
+      if (!isDegradable(e)) throw e; // a transient version lookup is skipped, not fatal
     }
   }
   return {
@@ -437,13 +448,27 @@ async function runBStage(
   now: number,
   fetchedAt: string,
   progress: ProgressReporter,
-): Promise<void> {
+): Promise<EnrichFailure[]> {
+  const failed: EnrichFailure[] = [];
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i] as CorpusRepo;
     progress(`enrich B-chain ${i + 1}/${rows.length}: ${row.full_name}`);
-    const bSignals = await resolveBGroup(sources, row.full_name, now, fetchedAt);
-    Object.assign(row.signals, bSignals);
+    try {
+      const bSignals = await resolveBGroup(sources, row.full_name, now, fetchedAt);
+      Object.assign(row.signals, bSignals);
+    } catch (e) {
+      // Persist resilience: an unexpected B-stage throw (our-bug INVALID_INPUT or
+      // a non-EngineError) never aborts the run and discards the GraphQL work —
+      // the repo keeps its GraphQL signals, is recorded in failed[], and the loop
+      // continues so every other row still saves.
+      failed.push({
+        id: row.full_name,
+        code: e instanceof EngineError ? e.code : 'FETCH_FAILED',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
   }
+  return failed;
 }
 
 export async function runEnrich(
@@ -466,16 +491,16 @@ export async function runEnrich(
   }
 
   const fragment = buildEnrichFragment(nowMs);
-  const { enrichedRows, failed, pointsSpent } = await runGraphqlStage(
-    sources,
-    cache,
-    targets,
-    fragment,
-    fetchedAt,
-    progress,
-  );
+  const {
+    enrichedRows,
+    failed: graphqlFailed,
+    pointsSpent,
+  } = await runGraphqlStage(sources, cache, targets, fragment, fetchedAt, progress);
 
-  if (!opts.skipDeps) await runBStage(sources, enrichedRows, nowMs, fetchedAt, progress);
+  const bFailed = opts.skipDeps
+    ? []
+    : await runBStage(sources, enrichedRows, nowMs, fetchedAt, progress);
+  const failed = [...graphqlFailed, ...bFailed];
 
   const fresh: Corpus = {
     schema: CORPUS_SCHEMA,
