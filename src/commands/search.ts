@@ -139,6 +139,12 @@ function validateFlags(opts: SearchOpts): void {
       `unknown --period '${opts.period}' (expected 24h, week, or month)`,
     );
   }
+  if (opts.period !== undefined && opts.source !== 'trending') {
+    throw new EngineError(
+      'INVALID_INPUT',
+      '--period only applies to --source trending (OSS Insight is the only source with a time-window concept); use --source trending or drop --period',
+    );
+  }
   if (opts.source === 'trending') validateTrendingFlags(opts);
   if (opts.limit !== undefined) {
     const n = Number(opts.limit);

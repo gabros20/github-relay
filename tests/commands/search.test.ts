@@ -154,6 +154,17 @@ describe('runSearch — validation (no network)', () => {
     );
   });
 
+  test('--period without --source trending → INVALID_INPUT, zero network calls', async () => {
+    const cache = createCache(dir);
+    const src = sources();
+    await expect(runSearch(src, cache, baseOpts({ period: 'week' }))).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+    });
+    await expect(
+      runSearch(src, cache, baseOpts({ period: 'week', source: 'rest' })),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+
   test('--limit out of range (0, 101, non-numeric) → INVALID_INPUT', async () => {
     const cache = createCache(dir);
     for (const limit of ['0', '101', 'abc', '-5']) {
