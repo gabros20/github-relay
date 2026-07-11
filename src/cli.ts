@@ -5,7 +5,9 @@
 // process.exit itself — main() below owns that translation.
 import { type Cache, createCache } from './cache/index.ts';
 import { batchOptsFromArgs, runBatch } from './commands/batch.ts';
+import { enrichOptsFromArgs, runEnrich } from './commands/enrich.ts';
 import { hydrateOptsFromArgs, runHydrate } from './commands/hydrate.ts';
+import { rankOptsFromArgs, runRank } from './commands/rank.ts';
 import { commandNames } from './commands/registry.ts';
 import { COMMANDS } from './commands/registry.ts';
 import { guard } from './commands/runners.ts';
@@ -168,6 +170,12 @@ export function dispatch(
       return guard('batch', () => runBatch(sources, cache, batchOptsFromArgs(parsed)));
     case 'hydrate':
       return guard('hydrate', () => runHydrate(sources, cache, hydrateOptsFromArgs(parsed), stdin));
+    case 'enrich':
+      return guard('enrich', () => runEnrich(sources, cache, enrichOptsFromArgs(parsed)));
+    case 'rank':
+      // rank is offline: it never receives Sources — enforced by runRank's
+      // signature taking only opts (design §3.7, zero network).
+      return guard('rank', () => Promise.resolve(runRank(rankOptsFromArgs(parsed))));
     default:
       return Promise.resolve(
         err(

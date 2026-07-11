@@ -167,19 +167,52 @@ describe('dispatch — a name outside the registry is still UNKNOWN_COMMAND / ex
   });
 });
 
-describe('dispatch — a registered-but-unimplemented command is still UNKNOWN_COMMAND / exit 2', () => {
-  test('enrich (task 5) has not landed yet', async () => {
+describe('dispatch — enrich (task 5)', () => {
+  test('missing --in → INVALID_INPUT, exit 1, zero network', async () => {
     const { stdout, exitCode } = await run(
       ['enrich', '--compact'],
       fakeSources(),
       '',
       createCache(dir),
     );
-    expect(exitCode).toBe(2);
+    expect(exitCode).toBe(1);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
     if (envelope.ok) throw new Error('expected failure');
-    expect(envelope.error.code).toBe('UNKNOWN_COMMAND');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('dispatch — rank (task 5, offline)', () => {
+  test('ranking a written corpus → ok:true, exit 0', async () => {
+    const out = join(dir, 'corpus.json');
+    const cache = createCache(dir);
+    await run(
+      ['search', 'markdown', 'editor', '--out', out, '--compact'],
+      fakeSources(),
+      '',
+      cache,
+    );
+
+    const { stdout, exitCode } = await run(['rank', out, '--compact'], fakeSources(), '', cache);
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.command).toBe('rank');
+  });
+
+  test('no corpus path → INVALID_INPUT, exit 1', async () => {
+    const { stdout, exitCode } = await run(
+      ['rank', '--compact'],
+      fakeSources(),
+      '',
+      createCache(dir),
+    );
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
   });
 });
 

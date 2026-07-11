@@ -39,19 +39,18 @@ describe('run — unknown command', () => {
 // search/batch/hydrate are wired (task 4) — their own envelope/exit-code
 // contract is covered in tests/cli.dispatch.test.ts. Every other registered
 // command still falls through to the "not yet implemented" path here.
-const UNIMPLEMENTED_COMMANDS = commandNames.filter(
-  (name) => name !== 'search' && name !== 'batch' && name !== 'hydrate',
-);
+const WIRED_COMMANDS = new Set(['search', 'batch', 'hydrate', 'enrich', 'rank']);
+const UNIMPLEMENTED_COMMANDS = commandNames.filter((name) => !WIRED_COMMANDS.has(name));
 
 describe('run — registered but unimplemented command', () => {
-  test('enrich (no runner wired yet) → UNKNOWN_COMMAND envelope, exit 2, command echoed', async () => {
-    const { stdout, exitCode } = await run(['enrich'], {});
+  test('a still-unimplemented runner (code) → UNKNOWN_COMMAND envelope, exit 2, command echoed', async () => {
+    const { stdout, exitCode } = await run(['code'], {});
     expect(exitCode).toBe(2);
     const envelope = JSON.parse(stdout) as Envelope<unknown>;
     expect(envelope.ok).toBe(false);
     if (envelope.ok) throw new Error('expected failure');
     expect(envelope.error.code).toBe('UNKNOWN_COMMAND');
-    expect(envelope.command).toBe('enrich');
+    expect(envelope.command).toBe('code');
     expect(envelope.error.message).toContain('not yet implemented');
   });
 
@@ -60,6 +59,26 @@ describe('run — registered but unimplemented command', () => {
       const { exitCode } = await run([name], {});
       expect(exitCode).toBe(2);
     }
+  });
+});
+
+describe('run — enrich/rank are now wired (task 5)', () => {
+  test('enrich without --in → INVALID_INPUT, exit 1 (not the unimplemented path)', async () => {
+    const { stdout, exitCode } = await run(['enrich'], {});
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
+  });
+
+  test('rank without a corpus path → INVALID_INPUT, exit 1', async () => {
+    const { stdout, exitCode } = await run(['rank'], {});
+    expect(exitCode).toBe(1);
+    const envelope = JSON.parse(stdout) as Envelope<unknown>;
+    expect(envelope.ok).toBe(false);
+    if (envelope.ok) throw new Error('expected failure');
+    expect(envelope.error.code).toBe('INVALID_INPUT');
   });
 });
 
