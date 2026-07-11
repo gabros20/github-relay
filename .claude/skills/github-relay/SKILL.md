@@ -34,9 +34,10 @@ GATE 0 — plan                     free local / --probe: 1 pt/slice, capped by 
   probe-point budget (default 30, override with --max-probes N); hitting it stops probing
   and reports the unprobed remainder the same hint-bearing way, never silently.
 
-GATE 1 — wide net                 cheap: search / batch / hydrate
+GATE 1 — wide net                 cheap: search / batch / hydrate / code
   ghrelay batch --file shards.txt --out corpus.json
   ghrelay hydrate <owner/repo...> --out corpus.json     # from YOUR web search — see rule 3
+  ghrelay code "NSTextLayoutManager(" --lang Swift       # optional: code-token evidence probe
   → 100-500 deduped, pre-enriched candidates in the corpus. Read nothing but counts yet.
 
 GATE 2 — enrich + rank            ~2-4 GraphQL pts + zero-quota third parties, then free
@@ -141,6 +142,29 @@ ghrelay hydrate <owner/repo...> [--out corpus.json] [-]
   in the corpus. `-` reads newline-separated ids from stdin (only when explicitly present).
   Per-id failures are soft (`failed[]`); shape validation is a hard `INVALID_INPUT` pre-flight.
 
+### `code` — free, grep.app lane. Code-token/regex evidence, GATE 1 (optional).
+```
+ghrelay code <pattern> [--lang X --repo o/r --path P] [--limit 20] [--out corpus.json]
+```
+- `pattern` must be an actual code token or regex, NOT natural language — `useState(`,
+  `import React from`, `(?s)try {.*await`. A prose-shaped pattern (more than 4 space-separated,
+  purely-lowercase words with no code punctuation anywhere) is rejected client-side with
+  `INVALID_INPUT` and the hint "code lanes need code tokens; use search for concepts" — zero
+  network spent either way. `--lang` (repeatable), `--repo`, `--path` filter grep.app's index
+  (~1M top repos, license inline); `--limit` defaults to 20, capped at 100 (grep.app's own tool
+  has no server-side limit, so this command truncates client-side).
+- Without `--out`: prints hit rows `{repo, path, line, snippet (truncated ~200 chars), lang?,
+  license?}` plus a `repos` footer — the distinct, sorted owner/repo ids the matches touched.
+  **Hydrate-ready, never auto-hydrated**: pipe `repos` straight into `hydrate` yourself. With
+  `--out`: merges one MINIMAL row per distinct repo (`source:"code"`, license when grep.app
+  supplied one — nothing else; full enrichment stays `hydrate`/`enrich`'s job) into the corpus.
+- **Circuit breaker** (grep.app is a free, no-SLA goodwill service, design §12): after 2
+  consecutive 429/5xx failures, the breaker opens and persists in `budget.json` — further calls
+  fail fast with `SOURCE_DOWN` and a `retryAfterMs` hint, WITHOUT spending a network call, until
+  a cooldown elapses; the next call after that is a single half-open probe that closes the
+  breaker on success or reopens it on failure. `doctor` reports both grep.app reachability and
+  the current breaker state.
+
 ### `enrich` — ~2-4 GraphQL points per 50 repos + zero-quota third parties. GATE 2.
 ```
 ghrelay enrich --in corpus.json [ids...] [--top 50] [--skip-deps] [--stale-ok]
@@ -224,10 +248,12 @@ ghrelay doctor [--offline]
 ```
 - ALWAYS returns `ok:true` with `{healthy, checks[], summary}` — a failing check is DATA, never
   a thrown error. Checks: token present + valid (with a PAT-expiry nag inside 7 days), GraphQL
-  round-trip, ecosyste.ms/deps.dev reachability, cache dir writable, `git` binary presence, and
-  a `starredAt` feature probe (this API was reported admin-restricted 2026-06-30 — doctor tells
-  you live whether it's currently available, since F-group scoring degrades gracefully either
-  way). `--offline` skips the 3 live network checks but still resolves the token locally.
+  round-trip, ecosyste.ms/deps.dev/grep.app reachability, cache dir writable, `git` binary
+  presence, a `starredAt` feature probe (this API was reported admin-restricted 2026-06-30 —
+  doctor tells you live whether it's currently available, since F-group scoring degrades
+  gracefully either way), and a local `grepAppBreaker` row reporting `code`'s circuit-breaker
+  state (always runs, even `--offline` — it's a cache read, not a network call). `--offline`
+  skips the live network checks but still resolves the token locally.
 
 ### `cache` — free, local. Inspect or reclaim `~/.ghrelay`.
 ```
@@ -242,12 +268,10 @@ ghrelay cache gc [--older-than 30d]
 
 ### Roadmap (v0.1 milestone B — registry-listed, not yet implemented)
 
-- **`code`** — grep.app code-token/regex evidence lane (`INVALID_INPUT` on natural-language
-  input — it needs actual code tokens/regex, not intent).
 - **`health`** — GATE 3 forensics consolidation: issue close-latency, ClickHouse lifetime
   star-velocity histograms (burstiness, viral-corroboration), `/contributors` bus factor;
-  auto-recomputes C/D/F and coverage. Calling either of these returns `UNKNOWN_COMMAND` with a
-  "not yet implemented" message — don't script against them yet.
+  auto-recomputes C/D/F and coverage. Calling it returns `UNKNOWN_COMMAND` with a "not yet
+  implemented" message — don't script against it yet.
 
 ---
 
@@ -290,7 +314,7 @@ never guess a shorter wait.**
 - `CONFIRMATION_REQUIRED` — a destructive op (`cache clear`) needs `--confirm`; nothing was
   touched.
 - `UNKNOWN_COMMAND` — a name outside the registry, OR a registered-but-not-yet-implemented
-  command (`code`/`health` — see Roadmap above).
+  command (`health` — see Roadmap above).
 - `FETCH_FAILED` — a generic transport/parse failure not covered by a more specific code.
 
 ---
