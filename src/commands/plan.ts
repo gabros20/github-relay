@@ -41,6 +41,11 @@ const REPO_EPOCH = Date.UTC(2008, 0, 1);
 /** A practical ceiling for an unbounded stars: window's geometric-mean split point — well above any real repo's star count (~400k as of 2026), so it never distorts a real query, only gives the recursion something finite to bisect against. */
 const PRACTICAL_MAX_STARS = 500_000;
 
+// Caveat: these regexes are quote-unaware — a `stars:` or `created:` token
+// embedded inside a quoted string literal elsewhere in the slice (unusual,
+// but GitHub's search grammar permits quoted qualifier VALUES, e.g. free-text
+// containing the literal substring "stars:") would still match here. Accepted
+// for v0.1: real-world query slices never do this.
 const STARS_QUALIFIER_RE = /(?:^|\s)stars:(\S+)/i;
 const CREATED_QUALIFIER_RE = /(?:^|\s)created:(\S+)/i;
 
@@ -169,6 +174,10 @@ function formatStarsQualifier(w: Window): string {
   return `stars:${w.lo}..${w.hi}`;
 }
 
+/** A degenerate equal-stars window (`w.lo === w.hi`, e.g. `stars:500`) reports unsplittable —
+ * `chooseDimension` then falls back to `created:`, or (if that's exhausted too) surfaces the
+ * generic `exhaustedHint`, which doesn't name "equal stars" as the specific reason a caller
+ * reading `stars:500..500` in a leaf might expect. */
 function canSplitStars(w: Window): boolean {
   return w.hi === Number.POSITIVE_INFINITY ? true : w.hi - w.lo >= 1;
 }

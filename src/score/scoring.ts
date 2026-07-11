@@ -298,6 +298,10 @@ function deriveMetrics(repo: CorpusRepo, ctx: ScoreContext): Metrics {
   const closeRatio = closeRatioOf(repo);
   const commits90d = numSig(repo, 'commits90d');
   const dependentsRaw = numSig(repo, 'dependentReposCount') ?? numSig(repo, 'dependents');
+  // No v0.1 source ever writes `downloadsPercentile` — no adapter computes an
+  // ecosystem-relative download percentile yet, so this always reads
+  // undefined today. The read site is kept (rather than removed) for v0.2,
+  // when a source does.
   const downloadsPct = numSig(repo, 'downloadsPercentile');
   const mentionableUsers = numSig(repo, 'mentionableUsers');
   const topShare = numSig(repo, 'topContributorShare');

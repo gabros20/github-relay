@@ -26,6 +26,9 @@ import type { GrepApp } from '../sources/grep-app.ts';
 import type { OssInsight } from '../sources/ossinsight.ts';
 import { EngineError } from '../types.ts';
 
+// WATCH-ITEM: 14.3s of a 15s budget is a ~5% margin — the next check added
+// here (sequential-by-design, never Promise.all) needs DEFAULT_CHECK_TIMEOUT_MS
+// retuned downward at the same time, or the worst case silently blows past 15s.
 const DEFAULT_CHECK_TIMEOUT_MS = 1300; // 11 checks * 1.3s worst case = 14.3s < design's 15s budget
 
 // A small, well-known public repo used purely as a reachability/feature

@@ -35,6 +35,11 @@ const PREFIX_LEN = 155;
 const REGULAR_FILE = new Set(['0', '\0']);
 const GNU_LONGNAME = 'L';
 
+// Deferred (v0.1 YAGNI): GNU tar's base-256 size encoding (the top bit of the
+// first size byte set, for files >=8GB in plain octal) is unsupported — only
+// ordinary ASCII-octal sizes are read. GitHub's server-side `git archive`
+// tarballs never need it in practice; a repo whose files require it would
+// already be well past digest's own byte/token caps.
 function readOctal(buf: Uint8Array, offset: number, length: number): number {
   let s = '';
   for (let i = 0; i < length; i++) {
@@ -82,6 +87,10 @@ export function parseTar(buf: Uint8Array): TarEntry[] {
 
     offset += BLOCK;
     const contentBlocks = Math.ceil(size / BLOCK) * BLOCK;
+    // `subarray` is a VIEW, not a copy: it shares `buf`'s underlying
+    // ArrayBuffer. As long as digest.ts keeps even one entry's `content`
+    // around (post-filtering), the WHOLE decompressed tarball buffer stays
+    // retained in memory — not just the bytes for the entries actually kept.
     const content = buf.subarray(offset, offset + size);
 
     if (typeflag === GNU_LONGNAME) {

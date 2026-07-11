@@ -71,6 +71,11 @@ export function createNodeExec(opts: NodeExecOptions = {}): Exec {
       }
       let stdout = '';
       let stderr = '';
+      // Caveat: each chunk is decoded independently (`d.toString()` defaults
+      // to UTF-8). A multi-byte UTF-8 character split across a chunk
+      // boundary decodes as two mangled replacement characters instead of
+      // one correct one — accepted here since every real caller (git
+      // --version, gh auth token, digest's clone) only reads ASCII output.
       proc.stdout.on('data', (d: Buffer) => {
         stdout += d.toString();
       });
