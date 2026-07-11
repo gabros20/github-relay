@@ -165,8 +165,11 @@ function buildHeader(
     tail = 'full coverage (7/7).';
   } else {
     const groups = [...missing].sort();
-    const commands = [...new Set(groups.map((g) => GROUP_COMPLETION[g] ?? 'health'))].join(', ');
-    tail = `missing groups ${groups.join('/')} — run ${commands} on finalists to complete them.`;
+    const commands = new Set<string>();
+    for (const g of groups) {
+      for (const cmd of (GROUP_COMPLETION[g] ?? 'health').split('/')) commands.add(cmd);
+    }
+    tail = `missing groups ${groups.join('/')} — run ${[...commands].join(', ')} on finalists to complete them.`;
   }
   return {
     header: `profile=${profile.name} · ${scores.length} repos · coverage avg ${avg}/7 (min ${min}/7) · ${tail}`,
