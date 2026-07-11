@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   DEFAULT_PROFILE,
   PROFILES,
+  PROFILE_NAMES,
   effectiveProfile,
   parseWeights,
   resolveProfile,
@@ -13,6 +14,15 @@ function weightOf(name: keyof typeof PROFILES, key: string): number | undefined 
 }
 
 describe('profile weights — exact design §5 letter', () => {
+  // The invariant guard (design §5 erratum 2026-07-11): every SHIPPED profile
+  // totals exactly 100. This is what would have caught the original dissect=95.
+  test('every built-in profile sums to exactly 100', () => {
+    for (const name of PROFILE_NAMES) {
+      const sum = PROFILES[name].components.reduce((s, c) => s + c.weight, 0);
+      expect(sum, `${name} weights must sum to 100`).toBe(100);
+    }
+  });
+
   test('build-on: A25 B20 C15 D10 E10 F10 L10, summing to 100', () => {
     expect(weightOf('build-on', 'A')).toBe(25);
     expect(weightOf('build-on', 'B')).toBe(20);
