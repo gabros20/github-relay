@@ -186,6 +186,92 @@ export function updateBudgetFromRestHeaders(
   });
 }
 
+// ── OSS Insight pool bookkeeping (design §4: 600/hr/IP) ────────────────────
+
+/** Seeds ONLY the very first local-count estimate when OSS Insight's own headers are absent — the documented policy ceiling (design §4), not a trusted live value. */
+const OSSINSIGHT_DEFAULT_HOURLY = 600;
+const OSSINSIGHT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Persist the ossinsight pool from a trending call's live rate-window headers
+ * when present (never a trusted constant, same as every other pool). When
+ * OSS Insight omits them, fall back to counting locally: decrement the last
+ * known window by one observed call, or — only when nothing has ever been
+ * observed AND no live window is currently in progress — seed from the
+ * documented 600/hr ceiling (design §4). Never re-trusts that seed once a
+ * real header snapshot (or even a prior local count) exists.
+ */
+export function updateBudgetFromOssInsight(
+  cache: Cache,
+  rateWindow: { remaining: number; resetAt: string } | undefined,
+  now: () => number = Date.now,
+): void {
+  if (rateWindow) {
+    cache.budget.updatePool('ossinsight', rateWindow);
+    return;
+  }
+  const nowMs = now();
+  const current = cache.budget.load().ossinsight;
+  const windowLive = current !== undefined && Date.parse(current.resetAt) > nowMs;
+  if (windowLive) {
+    cache.budget.updatePool('ossinsight', {
+      remaining: Math.max(0, (current as { remaining: number }).remaining - 1),
+      resetAt: (current as { resetAt: string }).resetAt,
+    });
+    return;
+  }
+  cache.budget.updatePool('ossinsight', {
+    remaining: OSSINSIGHT_DEFAULT_HOURLY - 1,
+    resetAt: new Date(nowMs + OSSINSIGHT_WINDOW_MS).toISOString(),
+  });
+}
+
+// ── learned GraphQL batch ceilings (design §2 gh-graphql, §12 risk 5) ──────
+// Persisted per fragment WEIGHT CLASS ('light': enrich's + hydrate's
+// fragments; 'heavy': health's) rather than per exact fragment — a
+// bisection observed by ANY light-weight caller tightens every light-weight
+// caller's starting point, since they all hit the same GraphQL 10s-timeout
+// wall for the same underlying reason (payload/response size). Two callers
+// sharing a weight class but different static defaults (enrich's 25 vs
+// hydrate's 50) each clamp independently against their OWN default — the
+// shared learned value can never push either one past its own ceiling.
+// Never widens on its own: a week of clean runs at the tightened ceiling →
+// optional decay/raise is explicitly future work (YAGNI for v0.1).
+
+export type FragmentWeight = 'light' | 'heavy';
+
+/** The batch size a caller should START at this run: the learned ceiling for `weight`, clamped into [1, staticDefault] — or `staticDefault` itself when nothing has been learned yet. */
+export function startingBatchSize(
+  cache: Cache,
+  weight: FragmentWeight,
+  staticDefault: number,
+): number {
+  const learned = cache.budget.load().learnedCeilings[weight];
+  if (learned === undefined) return staticDefault;
+  return Math.min(staticDefault, Math.max(1, learned));
+}
+
+/**
+ * Build the `onEffectiveSize` callback for one `batchRepositories` call.
+ * Persists `min(current learned ceiling, observed size)` ONLY when
+ * `observed < requestedBatchSize` — i.e. only when THIS call's adaptive
+ * bisection actually tightened below what was asked for. A chunk that
+ * succeeds at the full requested size teaches nothing new and is never
+ * written, so a fresh cache never accumulates a same-as-default entry.
+ */
+export function learnedCeilingRecorder(
+  cache: Cache,
+  weight: FragmentWeight,
+  requestedBatchSize: number,
+): (size: number) => void {
+  return (size: number) => {
+    if (size >= requestedBatchSize) return;
+    const current = cache.budget.load().learnedCeilings[weight];
+    const next = current === undefined ? size : Math.min(current, size);
+    if (next !== current) cache.budget.updateLearnedCeiling(weight, next);
+  };
+}
+
 // ── offline query-shape validators (design §3 item 1) ───────────────────────
 // Shared by batch's --dry-run and plan's offline validation (task 9) —
 // exactly one place defines "what makes a search-query slice too complex",

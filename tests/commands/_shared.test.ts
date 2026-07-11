@@ -7,10 +7,13 @@ import { CORPUS_SCHEMA, createCache, saveCorpus } from '../../src/cache/index.ts
 import {
   type RawRepoNode,
   compactRow,
+  learnedCeilingRecorder,
   loadCorpusOrEmpty,
   normalizeRepoNode,
   searchRepositories,
+  startingBatchSize,
   updateBudgetFromGraphql,
+  updateBudgetFromOssInsight,
   updateBudgetFromRestHeaders,
 } from '../../src/commands/_shared.ts';
 
@@ -176,6 +179,162 @@ describe('updateBudgetFromRestHeaders', () => {
     const cache = createCache(dir);
     updateBudgetFromRestHeaders(cache, 'restSearch', new Headers());
     expect(cache.budget.load().restSearch).toBeUndefined();
+  });
+});
+
+describe('updateBudgetFromOssInsight', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ghrelay-shared-ossinsight-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a live rate window is persisted verbatim', () => {
+    const cache = createCache(dir);
+    updateBudgetFromOssInsight(cache, { remaining: 598, resetAt: '2026-07-11T14:00:00.000Z' });
+    expect(cache.budget.load().ossinsight).toEqual({
+      remaining: 598,
+      resetAt: '2026-07-11T14:00:00.000Z',
+    });
+  });
+
+  test('no headers + nothing observed yet seeds from the documented 600/hr ceiling', () => {
+    const cache = createCache(dir);
+    const now = () => Date.parse('2026-07-11T13:10:00Z');
+    updateBudgetFromOssInsight(cache, undefined, now);
+    expect(cache.budget.load().ossinsight).toEqual({
+      remaining: 599,
+      resetAt: new Date(Date.parse('2026-07-11T13:10:00Z') + 60 * 60 * 1000).toISOString(),
+    });
+  });
+
+  test('no headers + a live prior window decrements locally by one, resetAt unchanged', () => {
+    const cache = createCache(dir);
+    const now = () => Date.parse('2026-07-11T13:10:00Z');
+    cache.budget.updatePool('ossinsight', {
+      remaining: 500,
+      resetAt: new Date(Date.parse('2026-07-11T13:10:00Z') + 30 * 60 * 1000).toISOString(),
+    });
+    updateBudgetFromOssInsight(cache, undefined, now);
+    expect(cache.budget.load().ossinsight).toEqual({
+      remaining: 499,
+      resetAt: new Date(Date.parse('2026-07-11T13:10:00Z') + 30 * 60 * 1000).toISOString(),
+    });
+  });
+
+  test('no headers + a prior window that already reset re-seeds fresh, never goes negative', () => {
+    const cache = createCache(dir);
+    const now = () => Date.parse('2026-07-11T13:10:00Z');
+    cache.budget.updatePool('ossinsight', {
+      remaining: 0,
+      resetAt: new Date(Date.parse('2026-07-11T12:00:00Z')).toISOString(), // already past
+    });
+    updateBudgetFromOssInsight(cache, undefined, now);
+    expect(cache.budget.load().ossinsight).toEqual({
+      remaining: 599,
+      resetAt: new Date(Date.parse('2026-07-11T13:10:00Z') + 60 * 60 * 1000).toISOString(),
+    });
+  });
+
+  test('a real header snapshot always overrides local counting on the next call', () => {
+    const cache = createCache(dir);
+    const now = () => Date.parse('2026-07-11T13:10:00Z');
+    updateBudgetFromOssInsight(cache, undefined, now); // seeds 599 locally
+    updateBudgetFromOssInsight(cache, { remaining: 42, resetAt: '2026-07-11T14:00:00.000Z' }, now);
+    expect(cache.budget.load().ossinsight).toEqual({
+      remaining: 42,
+      resetAt: '2026-07-11T14:00:00.000Z',
+    });
+  });
+});
+
+describe('startingBatchSize — learned GraphQL batch ceilings', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ghrelay-shared-ceiling-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('nothing learned yet → the static default', () => {
+    const cache = createCache(dir);
+    expect(startingBatchSize(cache, 'light', 25)).toBe(25);
+  });
+
+  test('a learned ceiling below the static default wins', () => {
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('light', 12);
+    expect(startingBatchSize(cache, 'light', 25)).toBe(12);
+  });
+
+  test('a learned ceiling never exceeds the CALLER\'s own static default, even if the stored value is higher', () => {
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('light', 40); // e.g. hydrate's own default, higher than enrich's
+    expect(startingBatchSize(cache, 'light', 25)).toBe(25);
+  });
+
+  test('floors at 1 even against a corrupt/negative stored value', () => {
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('heavy', -5);
+    expect(startingBatchSize(cache, 'heavy', 10)).toBe(1);
+  });
+
+  test('weight classes are independent — a heavy ceiling never affects light', () => {
+    const cache = createCache(dir);
+    cache.budget.updateLearnedCeiling('heavy', 3);
+    expect(startingBatchSize(cache, 'light', 25)).toBe(25);
+  });
+});
+
+describe('learnedCeilingRecorder', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ghrelay-shared-recorder-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a chunk succeeding at the full requested size teaches nothing (no write)', () => {
+    const cache = createCache(dir);
+    const record = learnedCeilingRecorder(cache, 'light', 25);
+    record(25);
+    expect(cache.budget.load().learnedCeilings.light).toBeUndefined();
+  });
+
+  test('a chunk that succeeded smaller than requested (bisection) persists it', () => {
+    const cache = createCache(dir);
+    const record = learnedCeilingRecorder(cache, 'light', 25);
+    record(12);
+    expect(cache.budget.load().learnedCeilings.light).toBe(12);
+  });
+
+  test('persists the MINIMUM observed across multiple calls, never grows back up', () => {
+    const cache = createCache(dir);
+    const record = learnedCeilingRecorder(cache, 'light', 25);
+    record(12);
+    record(20); // larger than the current 12 — must not overwrite upward
+    expect(cache.budget.load().learnedCeilings.light).toBe(12);
+    record(6); // smaller — tightens further
+    expect(cache.budget.load().learnedCeilings.light).toBe(6);
+  });
+
+  test('weight classes write to independent keys', () => {
+    const cache = createCache(dir);
+    learnedCeilingRecorder(cache, 'light', 25)(12);
+    learnedCeilingRecorder(cache, 'heavy', 10)(3);
+    const ceilings = cache.budget.load().learnedCeilings;
+    expect(ceilings).toEqual({ light: 12, heavy: 3 });
+  });
+
+  test('round-trips across two independent createCache instances on the same root', () => {
+    const cacheA = createCache(dir);
+    learnedCeilingRecorder(cacheA, 'light', 25)(12);
+    const cacheB = createCache(dir);
+    expect(startingBatchSize(cacheB, 'light', 25)).toBe(12);
   });
 });
 
