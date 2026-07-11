@@ -25,7 +25,7 @@ import { EngineError } from '../types.ts';
 
 const DEFAULT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30d, matching the documented usage default
 const SIXTY_FOUR_HEX = /^[0-9a-f]{64}$/;
-const DURATION_RE = /^(\d+)(d|h|m)$/;
+const DURATION_RE = /^(\d+)(d|h|m)$/i;
 
 export interface CacheOpts {
   subcommand?: string;
@@ -163,7 +163,8 @@ function parseOlderThan(raw: string | undefined): number {
     );
   }
   const n = Number(m[1]);
-  const unitMs = m[2] === 'd' ? 86_400_000 : m[2] === 'h' ? 3_600_000 : 60_000;
+  const unit = (m[2] as string).toLowerCase();
+  const unitMs = unit === 'd' ? 86_400_000 : unit === 'h' ? 3_600_000 : 60_000;
   return n * unitMs;
 }
 

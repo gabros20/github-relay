@@ -265,6 +265,14 @@ describe('runCache gc', () => {
     expect(() => runCache(cache, { subcommand: 'gc', olderThan: '90m' })).not.toThrow();
   });
 
+  test('--older-than is case-insensitive on the unit (30D/12H/90M)', () => {
+    const cache = createCache(dir);
+    cache.blobs.put('a'.repeat(40), 'x');
+    expect(() => runCache(cache, { subcommand: 'gc', olderThan: '30D' })).not.toThrow();
+    expect(() => runCache(cache, { subcommand: 'gc', olderThan: '12H' })).not.toThrow();
+    expect(() => runCache(cache, { subcommand: 'gc', olderThan: '90M' })).not.toThrow();
+  });
+
   test('garbage --older-than is INVALID_INPUT (on a marked root, so the duration parse is what actually fires)', () => {
     const cache = createCache(dir);
     cache.blobs.put('a'.repeat(40), 'x');
