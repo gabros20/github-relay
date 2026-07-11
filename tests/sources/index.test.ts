@@ -20,6 +20,7 @@ describe('createSources — shape + injected seams', () => {
     expect(typeof sources.ecosystems.repo).toBe('function');
     expect(typeof sources.depsdev.project).toBe('function');
     expect(typeof sources.grepApp.search).toBe('function');
+    expect(typeof sources.clickhouse.monthlyEvents).toBe('function');
   });
 
   test('the injected fetchImpl is the one the adapters actually use', async () => {

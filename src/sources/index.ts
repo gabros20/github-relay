@@ -5,6 +5,7 @@
 // for auth. Command dispatch is NOT wired here; runners land in tasks 4-7.
 import type { Exec } from './auth.ts';
 import { resolveToken } from './auth.ts';
+import { type ClickhousePlay, createClickhousePlay } from './clickhouse-play.ts';
 import { type DepsDev, createDepsDev } from './depsdev.ts';
 import { type Ecosystems, createEcosystems } from './ecosystems.ts';
 import { type GhGraphql, createGhGraphql } from './gh-graphql.ts';
@@ -19,6 +20,7 @@ export interface Sources {
   ecosystems: Ecosystems;
   depsdev: DepsDev;
   grepApp: GrepApp;
+  clickhouse: ClickhousePlay;
 }
 
 export interface CreateSourcesOptions extends Partial<Seams> {
@@ -45,6 +47,7 @@ export function createSources(opts: CreateSourcesOptions = {}): Sources {
   let ecosystems: Ecosystems | undefined;
   let depsdev: DepsDev | undefined;
   let grepApp: GrepApp | undefined;
+  let clickhouse: ClickhousePlay | undefined;
 
   return {
     get ghGraphql(): GhGraphql {
@@ -66,6 +69,10 @@ export function createSources(opts: CreateSourcesOptions = {}): Sources {
     get grepApp(): GrepApp {
       grepApp ??= createGrepApp(seams);
       return grepApp;
+    },
+    get clickhouse(): ClickhousePlay {
+      clickhouse ??= createClickhousePlay(seams);
+      return clickhouse;
     },
   };
 }
