@@ -343,20 +343,39 @@ export const CACHE_INPUT = {
 export type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
 /**
+ * Insert the forced `--quiet`/`--compact` flags BEFORE the first "--"
+ * end-of-flags sentinel, when one is present — never appended after it.
+ * Five builders (search/rank/skim/read/digest, fix wave 1) end their argv
+ * with `-- <positional>` so a free-text value can't be misread as a flag;
+ * appending `--quiet --compact` after that sentinel would make parseArgs
+ * treat them as extra POSITIONALS instead of flags (fix wave 2) — silently
+ * corrupting search's query, gaining junk `read` paths, and losing the
+ * compact/quiet forcing entirely (re-flooding what fix wave 1 capped, since
+ * pretty-printed JSON is far more tokens per row). Tools with no sentinel
+ * are unaffected: the flags are simply appended at the end, as before.
+ */
+export function withForcedFlags(argv: string[]): string[] {
+  const sentinelIndex = argv.indexOf('--');
+  if (sentinelIndex === -1) return [...argv, '--quiet', '--compact'];
+  return [...argv.slice(0, sentinelIndex), '--quiet', '--compact', ...argv.slice(sentinelIndex)];
+}
+
+/**
  * Run a built argv through the SAME run() path the CLI uses (`src/cli.ts`),
  * with the injected Sources/Cache — the pure, directly-testable seam.
- * `--quiet` and `--compact` are forced onto every call: quiet keeps stderr
- * progress out of the stdio transport, compact keeps the JSON cheap on
- * tokens. Error envelopes (ok:false) come back as ORDINARY tool results
- * (isError:true), never MCP protocol errors — the agent sees the full
- * {code, message, hint, retryAfterMs?} the CLI would print.
+ * `--quiet` and `--compact` are forced onto every call (via withForcedFlags,
+ * sentinel-aware): quiet keeps stderr progress out of the stdio transport,
+ * compact keeps the JSON cheap on tokens. Error envelopes (ok:false) come
+ * back as ORDINARY tool results (isError:true), never MCP protocol errors —
+ * the agent sees the full {code, message, hint, retryAfterMs?} the CLI
+ * would print.
  */
 export async function executeToolWith(
   sources: Sources,
   cache: Cache,
   argv: string[],
 ): Promise<ToolResult> {
-  const full = [...argv, '--quiet', '--compact'];
+  const full = withForcedFlags(argv);
   const { stdout, exitCode } = await run(full, sources, '', cache);
   return { content: [{ type: 'text', text: stdout }], isError: exitCode !== 0 };
 }

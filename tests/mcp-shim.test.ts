@@ -25,6 +25,7 @@ import {
   buildSkimArgv,
   executeToolWith,
   implementedCommands,
+  withForcedFlags,
 } from '../src/mcp-shim.ts';
 import type { Sources } from '../src/sources/index.ts';
 
@@ -323,6 +324,68 @@ describe('RANK_INPUT — top defaults + caps (fix wave 1, Critical 1)', () => {
   });
 });
 
+describe('withForcedFlags — quiet/compact land BEFORE the "--" sentinel (fix wave 2)', () => {
+  test('a sentinel-using tool (search) gets --quiet/--compact inserted before "--", not appended after it', () => {
+    const argv = buildSearchArgv({ query: 'markdown editor', out: 'corpus.json' });
+    const full = withForcedFlags(argv);
+    expect(full).toEqual([
+      'search',
+      '--out',
+      'corpus.json',
+      '--quiet',
+      '--compact',
+      '--',
+      'markdown editor',
+    ]);
+  });
+
+  test('a tool with no sentinel (batch) still gets the flags appended at the end, unchanged', () => {
+    const argv = buildBatchArgv({ file: 'q.txt', out: 'corpus.json' });
+    const full = withForcedFlags(argv);
+    expect(full).toEqual([
+      'batch',
+      '--file',
+      'q.txt',
+      '--out',
+      'corpus.json',
+      '--quiet',
+      '--compact',
+    ]);
+  });
+
+  test('the real pipeline: search query lands EXACTLY, quiet+compact parse as real flags (not swallowed positionals)', () => {
+    const argv = buildSearchArgv({ query: 'markdown editor', out: 'corpus.json' });
+    const parsed = parseArgs(withForcedFlags(argv));
+    expect(parsed.bools.has('quiet')).toBe(true);
+    expect(parsed.bools.has('compact')).toBe(true);
+    expect(searchOptsFromArgs(parsed).query).toBe('markdown editor');
+  });
+
+  test('a leading-dash query survives WITH the forced flags injected (the exact fix-wave-1 + fix-wave-2 interaction)', () => {
+    const argv = buildSearchArgv({ query: '--force push workflows', out: 'corpus.json' });
+    const parsed = parseArgs(withForcedFlags(argv));
+    expect(parsed.bools.has('quiet')).toBe(true);
+    expect(parsed.bools.has('compact')).toBe(true);
+    expect(searchOptsFromArgs(parsed).query).toBe('--force push workflows');
+  });
+
+  test('read gains no junk paths from the forced flags', () => {
+    const argv = buildReadArgv({ repo: 'a/b', paths: ['README.md'] });
+    const parsed = parseArgs(withForcedFlags(argv));
+    expect(parsed.positionals).toEqual(['a/b', 'README.md']);
+    expect(parsed.bools.has('quiet')).toBe(true);
+    expect(parsed.bools.has('compact')).toBe(true);
+  });
+
+  test('rank keeps exactly its corpus path positional, plus real quiet/compact flags', () => {
+    const argv = buildRankArgv({ corpusPath: 'corpus.json' });
+    const parsed = parseArgs(withForcedFlags(argv));
+    expect(parsed.positionals).toEqual(['corpus.json']);
+    expect(parsed.bools.has('quiet')).toBe(true);
+    expect(parsed.bools.has('compact')).toBe(true);
+  });
+});
+
 describe('executeToolWith — envelope passthrough (no server, no network)', () => {
   test('a validation failure (INVALID_INPUT) is an ordinary isError:true text result', async () => {
     const result = await executeToolWith(fakeSources, cache, ['rank']);
@@ -337,8 +400,12 @@ describe('executeToolWith — envelope passthrough (no server, no network)', () 
     expect(envelope.error.code).toBe('INVALID_INPUT');
   });
 
-  test('forces --quiet and --compact regardless of the argv passed in', async () => {
-    const result = await executeToolWith(fakeSources, cache, ['doctor', '--offline']);
+  test('forces --quiet and --compact even for a sentinel-using tool (fix wave 2)', async () => {
+    // rank's argv ends "... -- <corpusPath>" (the "--" sentinel from fix wave
+    // 1) — the forced flags must land BEFORE that sentinel, or they parse as
+    // extra positionals instead of real flags and compact/quiet are lost.
+    const argv = buildRankArgv({ corpusPath: '/nonexistent/ghrelay-mcp-shim-test-corpus.json' });
+    const result = await executeToolWith(fakeSources, cache, argv);
     const first = result.content[0];
     expect(first).toBeDefined();
     // Compact JSON is single-line — pretty-printed would contain '\n'.
