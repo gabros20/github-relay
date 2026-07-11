@@ -75,11 +75,12 @@ describe('argv builders — plan', () => {
     expect(argv).toEqual(['plan', '--', 'topic:markdown', 'topic:notes']);
   });
 
-  test('probe/shard/out map onto their flags, all before "--"', () => {
+  test('probe/shard/maxProbes/out map onto their flags, all before "--"', () => {
     const argv = buildPlanArgv({
       slices: ['topic:markdown'],
       probe: true,
       shard: 'created',
+      maxProbes: 10,
       out: 'queries.txt',
     });
     expect(argv).toEqual([
@@ -87,6 +88,8 @@ describe('argv builders — plan', () => {
       '--probe',
       '--shard',
       'created',
+      '--max-probes',
+      '10',
       '--out',
       'queries.txt',
       '--',
@@ -323,6 +326,15 @@ describe('PLAN_INPUT — slices required, out optional', () => {
   test('accepts slices with no out/probe/shard (offline validation is the default)', () => {
     const result = z.object(PLAN_INPUT).safeParse({ slices: ['topic:markdown'] });
     expect(result.success).toBe(true);
+  });
+
+  test('maxProbes accepts a positive integer, rejects zero/negative', () => {
+    expect(
+      z.object(PLAN_INPUT).safeParse({ slices: ['topic:markdown'], maxProbes: 10 }).success,
+    ).toBe(true);
+    expect(
+      z.object(PLAN_INPUT).safeParse({ slices: ['topic:markdown'], maxProbes: 0 }).success,
+    ).toBe(false);
   });
 });
 

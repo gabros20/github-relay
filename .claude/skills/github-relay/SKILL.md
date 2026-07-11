@@ -24,12 +24,15 @@ free zero-permission fine-grained PAT. No paid API keys, ever.
 ## The funnel
 
 ```
-GATE 0 — plan                     free local / --probe: 1 pt/slice
+GATE 0 — plan                     free local / --probe: 1 pt/slice, capped by --max-probes (30)
   ghrelay plan "topic:markdown language:swift stars:>50" "topic:notes topic:macos" --probe
   → validates each shard (256 chars / 5 AND·OR·NOT operators) before anything else runs;
   --probe spends 1 point per shard to check its result count and auto-splits anything over
   the 1,000-result cap into stars:/created: shards, RE-PROBING each one until every leaf
-  fits (or is reported with a manual-narrowing hint — never silently dropped).
+  fits (or is reported with a manual-narrowing hint — never silently dropped). Auto-sharding
+  can multiply "1 point per slice" into many more — the whole call is capped by a total
+  probe-point budget (default 30, override with --max-probes N); hitting it stops probing
+  and reports the unprobed remainder the same hint-bearing way, never silently.
 
 GATE 1 — wide net                 cheap: search / batch / hydrate
   ghrelay batch --file shards.txt --out corpus.json
@@ -67,28 +70,43 @@ All commands print a JSON envelope to stdout: `{ok, command, data}` on success,
 Exit codes: 0 ok, 1 command error, 2 unknown command. Over MCP, every tool forces `--quiet`
 (no stderr progress) and `--compact` (single-line JSON) — you never need to pass either.
 
-### `plan` — free local / --probe: 1 point per slice. GATE 0, validate before you spend.
+### `plan` — free local / --probe: 1 pt/slice, capped by --max-probes. GATE 0, validate before you spend.
 ```
-ghrelay plan <slices...> [--dry] [--probe] [--shard stars|created] [--out queries.txt]
+ghrelay plan <slices...> [--dry] [--probe] [--shard stars|created] [--max-probes 30]
+       [--out queries.txt]
 ```
 - Positional slices (also `-` for newline-separated stdin, `#` comments skipped). Default (and
   `--dry`, an alias) validates every slice OFFLINE — the same 256-char / 5-`AND`/`OR`/`NOT`-
   operator limits `search`/`batch` enforce — zero network, so bad shards are caught before
   anything is spent.
 - `--probe` spends 1 GraphQL point per slice on a `repositoryCount`-only probe (serialized,
-  500ms apart, never after the last). A slice over the 1,000-result cap is auto-sharded on
+  500ms apart by default — a `RATE_LIMITED` probe's own `retryAfterMs` REPLACES that delay
+  before the next one, same as `batch`). A slice over the 1,000-result cap is auto-sharded on
   `--shard` (default `stars`, else `created`) and EVERY shard is re-probed — a shard still over
   the cap recurses again (up to 5 levels deep), never a naive one-shot split. A slice that
   already carries a `stars:`/`created:` qualifier is narrowed WITHIN that range (never a
   contradictory second qualifier); if the active dimension can't be split further, plan falls
   back to the other one; if both are exhausted (or the depth cap is hit), the leftover shard is
   still returned with a `count` and a manual-narrowing `hint` — never silently dropped.
-- Output: `{slices: [{slice, ok, count?, shards?: [{query, count, hint?}], error?}], queries,
-  estimatedPoints, pointsSpent}` — `queries` is the flat, batch-ready list (valid slices as-is
-  offline, or their probed/sharded leaves with `--probe`); `estimatedPoints` forecasts what
-  running `queries` through `batch` would cost, `pointsSpent` is what `plan` itself just spent.
-  `--out queries.txt` writes that list batch-compatible (one query per line, `#` header) — feed
-  it straight into `batch --file queries.txt --out corpus.json`.
+- **Total probe-point budget**: auto-sharding can multiply "1 point per slice" into far more —
+  the whole `--probe` call is capped at `--max-probes` points (default 30). Hitting it stops
+  probing immediately; everything already completed (including a paid-for top-level count)
+  stands, and the unprobed remainder — whole slices or mid-recursion shards alike — comes back
+  as hint-bearing leaves (`"probe budget exhausted at N points; re-run with --max-probes or
+  narrow slices"`), never silently dropped, never spent past the cap.
+- **Per-probe failure isolation**: a single probe failing (`RATE_LIMITED`, transient network,
+  ...) never discards the rest of the slice. It isolates to its own leaf (carrying `error:
+  {code, message, retryAfterMs?}` plus a retry hint); every sibling/ancestor shard that already
+  completed — the slice's own top-level count included — stays in the result and in `queries[]`.
+  The slice stays `ok:true`; `failures[]` lists every probe that failed this way.
+- Output: `{slices: [{slice, ok, count?, shards?: [{query, count?, hint?, error?}], error?,
+  failures?}], queries, estimatedPoints, pointsSpent}` — `queries` is the flat, batch-ready list
+  (valid slices as-is offline, or their probed/sharded leaves with `--probe`, budget-cutoffs and
+  failed shards included); `estimatedPoints` forecasts what running `queries` through `batch`
+  would cost, `pointsSpent` is what `plan` itself actually spent probing (failed probes don't
+  count — they never spent a real point). `--out queries.txt` writes that list batch-compatible
+  (one query per line, `#` header) — feed it straight into `batch --file queries.txt --out
+  corpus.json`.
 
 ### `search` — cheap, 1 GraphQL point per 100 results. The wide net.
 ```

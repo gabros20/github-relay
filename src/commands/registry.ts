@@ -16,10 +16,12 @@ export interface CommandDef {
 export const COMMANDS: CommandDef[] = [
   {
     name: 'plan',
-    cost: 'free local / --probe: 1 pt per slice',
+    cost: 'free local / --probe: 1 pt per slice, auto-sharding can multiply — capped by --max-probes (default 30)',
     summary:
       'Validate agent-written query slices against GitHub search limits before spending anything.',
-    usage: 'ghrelay plan <slices...> [--dry] [--probe] [--shard stars|created] [--out queries.txt]',
+    usage:
+      'ghrelay plan <slices...> [--dry] [--probe] [--shard stars|created] [--max-probes 30] ' +
+      '[--out queries.txt]',
   },
   {
     name: 'search',

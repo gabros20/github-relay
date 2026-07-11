@@ -107,6 +107,7 @@ export function buildPlanArgv(args: ToolArgs): string[] {
   const argv = ['plan'];
   pushBool(argv, 'probe', args.probe);
   pushFlag(argv, 'shard', args.shard);
+  pushFlag(argv, 'max-probes', args.maxProbes);
   pushFlag(argv, 'out', args.out);
   argv.push('--', ...slices);
   return argv;
@@ -242,12 +243,23 @@ export const PLAN_INPUT = {
     .boolean()
     .describe(
       'COSTS POINTS: 1 GraphQL point per slice, plus 1 more per auto-shard re-probe when a ' +
-        'slice exceeds the 1,000-result cap. Omit/false to validate offline for free.',
+        'slice exceeds the 1,000-result cap — auto-sharding can multiply this well past ' +
+        '"1 per slice", so the total is capped by maxProbes (default 30). ' +
+        'Omit/false to validate offline for free.',
     )
     .optional(),
   shard: SHARD_ENUM.describe(
     'dimension to auto-shard on when --probe finds >1,000 results (default stars)',
   ).optional(),
+  maxProbes: z
+    .number()
+    .int()
+    .positive()
+    .describe(
+      'total probe-point ceiling for this call (default 30) — once hit, probing stops and the ' +
+        'remainder is returned as hint-bearing leaves, never silently dropped',
+    )
+    .optional(),
   out: z.string().describe('queries.txt path — batch-compatible, one query per line').optional(),
 };
 
