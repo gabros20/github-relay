@@ -35,6 +35,7 @@ function happySources(): DoctorSources {
     depsdev: { project: async () => ({}) },
     grepApp: { search: async () => [] },
     clickhouse: { monthlyEvents: async () => [] },
+    ossinsight: { trending: async () => ({ rows: [] }) },
   };
 }
 
@@ -73,13 +74,14 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
       'ecosystems',
       'depsdev',
       'clickhouse',
+      'ossinsight',
       'grepApp',
       'cacheDir',
       'git',
       'starredAt',
       'grepAppBreaker',
     ]);
-    expect(result.summary).toBe('10/10 checks ok');
+    expect(result.summary).toBe('11/11 checks ok');
   });
 
   test('EVERY check failing still returns ok:true at the envelope level — healthy:false, never throws', async () => {
@@ -114,6 +116,11 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
           throw new EngineError('SOURCE_DOWN', 'clickhouse down');
         },
       },
+      ossinsight: {
+        trending: async () => {
+          throw new EngineError('SOURCE_DOWN', 'ossinsight down');
+        },
+      },
     };
     const deps: DoctorDeps = {
       exec: async () => ({ stdout: '', exitCode: 1 }),
@@ -137,7 +144,7 @@ describe('runDoctor — always ok:true (the x-relay DNA contract)', () => {
     const other = result.checks.filter((c) => c.name !== 'grepAppBreaker');
     expect(other.every((c) => c.ok === false)).toBe(true);
     expect(result.checks.find((c) => c.name === 'grepAppBreaker')?.ok).toBe(true);
-    expect(result.summary).toBe('1/10 checks ok');
+    expect(result.summary).toBe('1/11 checks ok');
   });
 
   test('a single failing check does not abort the rest — later checks still run and can pass', async () => {
@@ -169,7 +176,7 @@ describe('runDoctor — per-check timeout', () => {
     expect(byName.get('graphql')?.ok).toBe(false);
     expect(byName.get('graphql')?.detail).toContain('timed out');
     // Every other check still ran to completion.
-    expect(result.checks).toHaveLength(10);
+    expect(result.checks).toHaveLength(11);
   });
 });
 
@@ -209,6 +216,11 @@ describe('runDoctor — --offline', () => {
           throw new Error('must not be called offline');
         },
       },
+      ossinsight: {
+        trending: async () => {
+          throw new Error('must not be called offline');
+        },
+      },
     };
     const result = await runDoctor(sources, cache, { offline: true }, happyDeps());
     const byName = new Map(result.checks.map((c) => [c.name, c]));
@@ -217,6 +229,7 @@ describe('runDoctor — --offline', () => {
     expect(byName.get('ecosystems')?.skipped).toBe(true);
     expect(byName.get('depsdev')?.skipped).toBe(true);
     expect(byName.get('clickhouse')?.skipped).toBe(true);
+    expect(byName.get('ossinsight')?.skipped).toBe(true);
     expect(byName.get('grepApp')?.skipped).toBe(true);
     expect(byName.get('starredAt')?.skipped).toBe(true);
     expect(byName.get('token')?.skipped).toBeUndefined();
@@ -335,6 +348,27 @@ describe('runDoctor — third-party reachability semantics', () => {
     expect(ch?.ok).toBe(false);
     expect(ch?.detail).toContain('unreachable');
     expect(result.checks.filter((c) => c.name !== 'clickhouse').every((c) => c.ok)).toBe(true);
+  });
+
+  test('OSS Insight reachable (zero rows still counts) passes; SOURCE_DOWN fails only it', async () => {
+    const cache = createCache(dir);
+    const okSources = happySources();
+    expect(
+      (await runDoctor(okSources, cache, {}, happyDeps())).checks.find(
+        (c) => c.name === 'ossinsight',
+      )?.ok,
+    ).toBe(true);
+    const downSources = happySources();
+    downSources.ossinsight = {
+      trending: async () => {
+        throw new EngineError('SOURCE_DOWN', 'OSS Insight unreachable');
+      },
+    };
+    const result = await runDoctor(downSources, cache, {}, happyDeps());
+    const oi = result.checks.find((c) => c.name === 'ossinsight');
+    expect(oi?.ok).toBe(false);
+    expect(oi?.detail).toContain('unreachable');
+    expect(result.checks.filter((c) => c.name !== 'ossinsight').every((c) => c.ok)).toBe(true);
   });
 
   test('grep.app reachable (zero hits still counts) passes the check', async () => {

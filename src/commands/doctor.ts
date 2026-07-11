@@ -6,9 +6,10 @@
 // service) with each individually raced against a timeout; the tradeoff is a
 // worst-case total time of sum(timeouts) rather than max(timeouts), so
 // DEFAULT_CHECK_TIMEOUT_MS is sized to keep that worst case under the
-// design's <15s budget even if every one of the 10 checks times out (task 10
-// added grepApp + grepAppBreaker; task 11 added the clickhouse row, so the
-// per-check budget tightened again from the earlier 9-check/1500ms sizing).
+// design's <15s budget even if every one of the 11 checks times out (task 10
+// added grepApp + grepAppBreaker; task 11 added clickhouse; task 12 added
+// ossinsight, so the per-check budget tightened again from the prior
+// 10-check/1400ms sizing: 11 * 1.3s = 14.3s < 15s).
 import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -22,9 +23,10 @@ import type { Ecosystems } from '../sources/ecosystems.ts';
 import type { GhGraphql } from '../sources/gh-graphql.ts';
 import type { GhRest } from '../sources/gh-rest.ts';
 import type { GrepApp } from '../sources/grep-app.ts';
+import type { OssInsight } from '../sources/ossinsight.ts';
 import { EngineError } from '../types.ts';
 
-const DEFAULT_CHECK_TIMEOUT_MS = 1400; // 10 checks * 1.4s worst case = 14s < design's 15s budget
+const DEFAULT_CHECK_TIMEOUT_MS = 1300; // 11 checks * 1.3s worst case = 14.3s < design's 15s budget
 
 // A small, well-known public repo used purely as a reachability/feature
 // probe target — never written to, never assumed to carry real research
@@ -57,6 +59,7 @@ export interface DoctorSources {
   depsdev: Pick<DepsDev, 'project'>;
   grepApp: Pick<GrepApp, 'search'>;
   clickhouse: Pick<ClickhousePlay, 'monthlyEvents'>;
+  ossinsight: Pick<OssInsight, 'trending'>;
 }
 
 export interface DoctorDeps {
@@ -222,6 +225,16 @@ export async function runDoctor(
       ? skippedCheck('clickhouse')
       : await runCheck('clickhouse', timeoutMs, () =>
           reachabilityCheck(() => sources.clickhouse.monthlyEvents([PROBE_FULL_NAME])),
+        ),
+  );
+
+  // task 12: this adapter's own doctor row, since search.ts owns the adapter.
+  // A cheap 24h trending probe (no repo target needed — it's a sitewide list).
+  checks.push(
+    offline
+      ? skippedCheck('ossinsight')
+      : await runCheck('ossinsight', timeoutMs, () =>
+          reachabilityCheck(() => sources.ossinsight.trending('past_24_hours')),
         ),
   );
 
