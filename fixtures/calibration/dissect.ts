@@ -1,5 +1,7 @@
-// Calibration set for the `dissect` profile (E40 Structure15 A5 B10 C10 D5 F10
-// L0): "something to study/take apart" — reward documentation, quality proxies,
+// Calibration set for the `dissect` profile (E40 Structure20 A5 B10 C10 D5 F10
+// L0, matches the profiles.ts erratum — panel text listed Structure15, summing
+// to 95; corrected to 20 so the profile totals 100): "something to study/take
+// apart" — reward documentation, quality proxies,
 // and sane structure over raw popularity. Good = described, topic-tagged,
 // homepage, CI/tests/README depth, disk in the 1MB..500MB band. Junk = opaque
 // (no description/topics/homepage/skim signals) or deprecated / out-of-band.

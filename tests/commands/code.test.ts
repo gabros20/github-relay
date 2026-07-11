@@ -158,7 +158,10 @@ describe('looksLikeNaturalLanguage', () => {
     'async function',
     '(?s)try {.*await',
     'getServerSession',
-    'export default function App', // exactly 4 plain words — well under the 6-word threshold
+    // 4 words, but only 3 are "plain lowercase" per LOWERCASE_WORD_RE (`App`
+    // has a capital and doesn't match) — well under the 6-word threshold
+    // either way, so this isn't actually a boundary case.
+    'export default function App',
   ];
   for (const pattern of codeCases) {
     test(`'${pattern}' is accepted as a code token/pattern`, () => {
