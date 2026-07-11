@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { createCache } from '../../src/cache/index.ts';
 import { parseArgs } from '../../src/cli.ts';
-import { type DigestSources, digestOptsFromArgs, runDigest } from '../../src/commands/digest.ts';
+import {
+  type DigestSources,
+  digestOptsFromArgs,
+  runDigest,
+  safeGunzip,
+} from '../../src/commands/digest.ts';
 import type { Exec } from '../../src/sources/auth.ts';
 import { EngineError } from '../../src/types.ts';
 
@@ -258,6 +263,40 @@ describe('runDigest — --max-tokens hard stop', () => {
     });
     expect(result.dropped?.files).toBeGreaterThan(0);
     expect(result.dropped?.hint).toContain('--include');
+  });
+});
+
+describe('safeGunzip — decompression-bomb guard', () => {
+  test('a tiny high-ratio gzip that exceeds a tiny maxOutputLength throws a clean EngineError, no OOM', () => {
+    // 200KB of a single repeated byte compresses to a tiny gzip payload.
+    const bomb = gzipSync(Buffer.alloc(200_000, 65));
+    expect(bomb.length).toBeLessThan(2_000); // genuinely "tiny" on the wire
+    expect(() => safeGunzip(bomb, 1_000)).toThrow(EngineError);
+  });
+
+  test('content within the limit decompresses normally', () => {
+    const small = gzipSync(Buffer.from('hello world'));
+    const out = safeGunzip(small, 1_000);
+    expect(Buffer.from(out).toString('utf8')).toBe('hello world');
+  });
+});
+
+describe('runDigest — decompression-bomb guard, end-to-end', () => {
+  test('a tarball whose decompressed size exceeds the injected cap fails cleanly (no OOM, no silent truncation)', async () => {
+    const cache = createCache(dir);
+    // Reuse the default fixture tarball (includes a 1MB+ file) against an
+    // injected cap far below its real decompressed size — deterministic and
+    // fast, without needing to actually exceed the real production cap.
+    const { ghRest } = fakeSources();
+    const exec: Exec = async () => ({ stdout: '', exitCode: 1 }); // git absent -> no fallback masks the guard
+    const err = (await runDigest(
+      { ghRest },
+      cache,
+      { repo: 'o/r', include: [], exclude: [] },
+      { exec, maxDecompressedBytes: 10_000 },
+    ).catch((e) => e)) as EngineError;
+    expect(err).toBeInstanceOf(EngineError);
+    expect(err.code).toBe('FETCH_FAILED');
   });
 });
 

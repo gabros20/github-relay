@@ -31,6 +31,13 @@ const CHARS_PER_TOKEN = 4;
 const OUT_REQUIRED_TOKENS = 8_000;
 /** Also the tarball download's own size guard — a >200MB tarball fails this before the clone fallback kicks in. */
 const MAX_TARBALL_BYTES = 200 * 1024 * 1024;
+/**
+ * Cap on the DECOMPRESSED byte size of a tarball — a documented multiple of
+ * MAX_TARBALL_BYTES, guarding against a decompression bomb (a small gzip
+ * that expands to gigabytes). node:zlib's `maxOutputLength` enforces this
+ * synchronously, so the bomb never fully materializes in memory.
+ */
+const MAX_DECOMPRESSED_BYTES = MAX_TARBALL_BYTES * 4;
 const MAX_FILE_BYTES = 1024 * 1024;
 const HEX_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -51,6 +58,8 @@ export interface DigestSources {
 export interface DigestDeps {
   now?: () => number;
   exec?: Exec;
+  /** Decompressed-tarball size guard — defaults to MAX_DECOMPRESSED_BYTES; overridable for tests. */
+  maxDecompressedBytes?: number;
 }
 
 export interface DigestDropped {
@@ -209,6 +218,24 @@ function stripLeadingPrefix(path: string): string {
   return slash === -1 ? path : path.slice(slash + 1);
 }
 
+/**
+ * `gunzipSync` with a hard cap on the decompressed output size — a
+ * decompression bomb (a tiny, highly-compressible gzip that expands to
+ * hundreds of MB+) throws synchronously via node:zlib's own
+ * `maxOutputLength` rather than materializing the whole thing in memory
+ * first. Exported for direct unit testing.
+ */
+export function safeGunzip(gz: Uint8Array, maxOutputLength: number): Uint8Array {
+  try {
+    return gunzipSync(gz, { maxOutputLength });
+  } catch {
+    throw new EngineError(
+      'FETCH_FAILED',
+      `tarball decompresses past the ${maxOutputLength}-byte guard (possible decompression bomb, or a repo too large for the tarball path) — try the git clone fallback`,
+    );
+  }
+}
+
 async function viaTarball(
   ghRest: DigestSources['ghRest'],
   cache: Cache,
@@ -216,6 +243,7 @@ async function viaTarball(
   repo: string,
   sha: string,
   now: () => number,
+  maxDecompressedBytes: number,
 ): Promise<FileEntry[]> {
   const cached = cache.tarballs.get(sha);
   let tarballPath: string;
@@ -232,7 +260,7 @@ async function viaTarball(
     cache.tarballs.put(sha, result.path, now);
     tarballPath = result.path;
   }
-  const tarBytes = gunzipSync(readFileSync(tarballPath));
+  const tarBytes = safeGunzip(readFileSync(tarballPath), maxDecompressedBytes);
   return parseTar(tarBytes).map((e) => ({
     path: stripLeadingPrefix(e.path),
     content: e.content,
@@ -309,10 +337,13 @@ async function obtainSnapshot(
   ref: string | undefined,
   exec: Exec,
   now: () => number,
+  maxDecompressedBytes: number,
 ): Promise<Snapshot> {
   let tarballError: unknown;
   try {
-    return { entries: await viaTarball(sources.ghRest, cache, owner, repo, sha, now) };
+    return {
+      entries: await viaTarball(sources.ghRest, cache, owner, repo, sha, now, maxDecompressedBytes),
+    };
   } catch (e) {
     if (!(e instanceof EngineError)) throw e;
     tarballError = e;
@@ -431,6 +462,7 @@ export async function runDigest(
 ): Promise<DigestResult> {
   const now = deps.now ?? Date.now;
   const exec = deps.exec ?? defaultExec;
+  const maxDecompressedBytes = deps.maxDecompressedBytes ?? MAX_DECOMPRESSED_BYTES;
   const { owner, repo } = parseOwnerRepo(opts.repo);
   const maxTokens = parseMaxTokens(opts.maxTokens);
 
@@ -444,6 +476,7 @@ export async function runDigest(
     opts.ref,
     exec,
     now,
+    maxDecompressedBytes,
   );
   const filtered = filterEntries(entries, opts.include, opts.exclude);
 
