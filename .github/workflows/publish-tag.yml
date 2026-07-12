@@ -1,0 +1,57 @@
+# Recovery/manual publisher: publish an EXISTING git tag to npm.
+# Exists because a release can partially fail (e.g. semantic-release pushed the
+# tag but npm publish was rejected — EOTP with a non-automation token). Normal
+# releases go through release.yml; this is the idempotent re-publish path.
+name: Publish tag to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to publish (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.1.45
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install and build
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "v$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::package.json version v$PKG_VERSION does not match tag $TAG — refusing to publish."
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret not set."
+            exit 1
+          fi
+          npm publish --access public
